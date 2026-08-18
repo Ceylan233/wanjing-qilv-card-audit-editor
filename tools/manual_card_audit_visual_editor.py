@@ -19,7 +19,7 @@ from urllib.error import HTTPError
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any
 from urllib.parse import unquote
 
@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.14"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.15"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -176,9 +176,10 @@ def fetch_json_url(url: str, headers: dict[str, str] | None = None) -> tuple[dic
         return payload, {str(key): str(value) for key, value in response.headers.items()}
 
 
-def remote_auth_headers(config: dict[str, Any]) -> dict[str, str]:
+def remote_auth_headers(config: dict[str, Any], token_override: str = "") -> dict[str, str]:
     token_env = str(config.get("token_env") or config.get("令牌环境变量") or REMOTE_TOKEN_ENV).strip()
-    token = os.environ.get(token_env, "").strip()
+    # 窗口输入的安全码只存在当前进程内存，不写入远程配置或日志。
+    token = token_override.strip() or str(config.get("session_token") or "").strip() or os.environ.get(token_env, "").strip()
     token_file = str(config.get("token_file") or config.get("令牌文件") or REMOTE_TOKEN_FILE).strip()
     if not token_file:
         token_file = str(REMOTE_TOKEN_FILE)
@@ -220,8 +221,8 @@ def normalize_remote_config(config: dict[str, Any], config_url: str) -> dict[str
     return binding
 
 
-def load_remote_document(config_url: str) -> tuple[Path, dict[str, Any], dict[str, Any]]:
-    bootstrap_token = os.environ.get(REMOTE_TOKEN_ENV, "").strip()
+def load_remote_document(config_url: str, token_override: str = "") -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    bootstrap_token = token_override.strip() or os.environ.get(REMOTE_TOKEN_ENV, "").strip()
     if not bootstrap_token:
         try:
             bootstrap_token = REMOTE_TOKEN_FILE.read_text(encoding="ascii").strip()
@@ -230,7 +231,9 @@ def load_remote_document(config_url: str) -> tuple[Path, dict[str, Any], dict[st
     bootstrap_headers = {"Authorization": f"Bearer {bootstrap_token}"} if bootstrap_token else {}
     config, _ = fetch_json_url(config_url, bootstrap_headers)
     binding = normalize_remote_config(config, config_url)
-    document, headers = fetch_json_url(binding["document_url"], remote_auth_headers(binding))
+    if token_override.strip():
+        binding["session_token"] = token_override.strip()
+    document, headers = fetch_json_url(binding["document_url"], remote_auth_headers(binding, token_override))
     if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
         raise RuntimeError("远程数据不是有效的卡牌校对 JSON（缺少“卡牌”数组）")
     cache_path: Path = binding["cache_path"]
@@ -296,6 +299,49 @@ def add_combo(parent: tk.Widget, row: int, label: str, variable: tk.StringVar, v
     combo = ttk.Combobox(parent, textvariable=variable, values=values, width=width, state="readonly")
     combo.grid(row=row, column=1, sticky="ew", padx=6, pady=4)
     return combo
+
+
+def ask_remote_settings(parent: tk.Misc, current_url: str = "") -> tuple[str, str] | None:
+    """在同一个窗口配置远程 URL 和安全码；安全码不落盘。"""
+    dialog = tk.Toplevel(parent)
+    dialog.title("配置远程校对")
+    dialog.transient(parent)
+    dialog.resizable(False, False)
+    dialog.grab_set()
+    url_var = tk.StringVar(value=current_url)
+    token_var = tk.StringVar()
+    body = ttk.Frame(dialog, padding=14)
+    body.grid(sticky="nsew")
+    body.columnconfigure(1, weight=1)
+    ttk.Label(body, text="配置 JSON URL").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=6)
+    url_entry = ttk.Entry(body, textvariable=url_var, width=68)
+    url_entry.grid(row=0, column=1, sticky="ew", pady=6)
+    ttk.Label(body, text="同步安全码").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=6)
+    token_entry = ttk.Entry(body, textvariable=token_var, show="*", width=68)
+    token_entry.grid(row=1, column=1, sticky="ew", pady=6)
+    ttk.Label(body, text="安全码仅保存在当前运行中，不会写入 JSON 或配置文件。", foreground="#666666").grid(
+        row=2, column=0, columnspan=2, sticky="w", pady=(2, 8)
+    )
+    result: list[tuple[str, str] | None] = [None]
+
+    def accept() -> None:
+        url = url_var.get().strip()
+        token = token_var.get().strip()
+        if not url or not token:
+            messagebox.showwarning("信息不完整", "请同时填写配置 JSON URL 和同步安全码。", parent=dialog)
+            return
+        result[0] = (url, token)
+        dialog.destroy()
+
+    buttons = ttk.Frame(body)
+    buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(4, 0))
+    ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=(6, 0))
+    ttk.Button(buttons, text="连接并加载", command=accept).pack(side="right")
+    dialog.bind("<Return>", lambda _event: accept())
+    dialog.bind("<Escape>", lambda _event: dialog.destroy())
+    url_entry.focus_set()
+    dialog.wait_window()
+    return result[0]
 
 
 class VisualAuditEditor(tk.Tk):
@@ -1022,11 +1068,18 @@ class VisualAuditEditor(tk.Tk):
         if not config_url:
             messagebox.showerror("远程配置无效", "缺少远程配置 URL。")
             return
+        token = str(self.remote_sync.get("session_token") or "").strip()
+        if not token:
+            settings = ask_remote_settings(self, config_url)
+            if not settings:
+                return
+            config_url, token = settings
+            self.remote_sync["config_url"] = config_url
         self.status_var.set("正在从远程加载校对文件…")
 
         def worker() -> None:
             try:
-                path, binding, document = load_remote_document(config_url)
+                path, binding, document = load_remote_document(config_url, token)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
             except Exception as exc:
                 detail = str(exc)
@@ -1036,20 +1089,15 @@ class VisualAuditEditor(tk.Tk):
 
     def configure_remote(self) -> None:
         current = str(self.remote_sync.get("config_url") if self.remote_sync else "")
-        config_url = simpledialog.askstring(
-            "配置远程校对",
-            "输入线上配置 JSON URL（阿里云 OSS 对象地址或预签名 URL）：",
-            initialvalue=current,
-            parent=self,
-        )
-        if not config_url or not config_url.strip():
+        settings = ask_remote_settings(self, current)
+        if not settings:
             return
-        config_url = config_url.strip()
+        config_url, token = settings
         self.status_var.set("正在验证远程配置并加载校对文件…")
 
         def worker() -> None:
             try:
-                path, binding, document = load_remote_document(config_url)
+                path, binding, document = load_remote_document(config_url, token)
                 save_remote_config_url(config_url)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
             except Exception as exc:
