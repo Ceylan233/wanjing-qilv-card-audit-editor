@@ -17,7 +17,7 @@ from pathlib import Path
 
 DATA_FILE = Path(os.environ.get("CARD_AUDIT_DATA_FILE", "/opt/wanjing-card-audit/data/manual_card_audit.json"))
 PUBLIC_BASE_URL = os.environ.get("CARD_AUDIT_PUBLIC_BASE_URL", "https://syncinema.pw/wanjing-card-audit").rstrip("/")
-TOKEN = os.environ.get("CARD_AUDIT_SYNC_TOKEN", "")
+SECURITY_CODE = os.environ.get("CARD_AUDIT_SECURITY_CODE", "")
 HOST = os.environ.get("CARD_AUDIT_BIND_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CARD_AUDIT_BIND_PORT", "19287"))
 MAX_BODY = 128 * 1024 * 1024
@@ -35,9 +35,9 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def authorized(self) -> bool:
-        if not TOKEN:
+        if not SECURITY_CODE:
             return False
-        return self.headers.get("Authorization", "") == f"Bearer {TOKEN}"
+        return self.headers.get("X-Card-Audit-Code", "") == SECURITY_CODE
 
     def send_json(self, status: int, payload: object, etag: str = "") -> None:
         body = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -65,8 +65,8 @@ class Handler(BaseHTTPRequestHandler):
                     "document_url": f"{PUBLIC_BASE_URL}/manual_card_audit.json",
                     "upload_url": f"{PUBLIC_BASE_URL}/manual_card_audit.json",
                     "method": "PUT",
-                    "token_env": "CARD_AUDIT_SYNC_TOKEN",
-                    "token_file": "~/.wanjing-card-audit-editor/sync_token.txt",
+                    "auth_header": "X-Card-Audit-Code",
+                    "认证方式": "窗口输入安全码",
                     "auto_sync": True,
                 }
             })
@@ -129,8 +129,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    if not TOKEN:
-        raise SystemExit("CARD_AUDIT_SYNC_TOKEN is required")
+    if not SECURITY_CODE:
+        raise SystemExit("CARD_AUDIT_SECURITY_CODE is required")
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()

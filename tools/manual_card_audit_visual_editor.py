@@ -86,16 +86,15 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.15"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.16"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
 UPDATE_CHECKSUM_ASSET = "SHA256SUMS.txt"
 REMOTE_CONFIG_ENV = "CARD_AUDIT_REMOTE_CONFIG_URL"
-REMOTE_TOKEN_ENV = "CARD_AUDIT_SYNC_TOKEN"
+REMOTE_SECURITY_CODE_ENV = "CARD_AUDIT_SECURITY_CODE"
 REMOTE_CACHE_DIR = Path.home() / ".wanjing-card-audit-editor"
 REMOTE_URL_FILE = REMOTE_CACHE_DIR / "remote_config_url.txt"
-REMOTE_TOKEN_FILE = REMOTE_CACHE_DIR / "sync_token.txt"
 
 
 def version_numbers(value: str) -> tuple[int, ...]:
@@ -176,22 +175,17 @@ def fetch_json_url(url: str, headers: dict[str, str] | None = None) -> tuple[dic
         return payload, {str(key): str(value) for key, value in response.headers.items()}
 
 
-def remote_auth_headers(config: dict[str, Any], token_override: str = "") -> dict[str, str]:
-    token_env = str(config.get("token_env") or config.get("令牌环境变量") or REMOTE_TOKEN_ENV).strip()
-    # 窗口输入的安全码只存在当前进程内存，不写入远程配置或日志。
-    token = token_override.strip() or str(config.get("session_token") or "").strip() or os.environ.get(token_env, "").strip()
-    token_file = str(config.get("token_file") or config.get("令牌文件") or REMOTE_TOKEN_FILE).strip()
-    if not token_file:
-        token_file = str(REMOTE_TOKEN_FILE)
-    if not token:
-        try:
-            token = Path(token_file).expanduser().read_text(encoding="ascii").strip()
-        except (OSError, UnicodeError):
-            token = ""
-    if not token:
+def remote_auth_headers(config: dict[str, Any], code_override: str = "") -> dict[str, str]:
+    # 安全码只存在当前进程内存，不写入远程配置或日志。
+    code = code_override.strip() or str(config.get("session_code") or "").strip() or os.environ.get(REMOTE_SECURITY_CODE_ENV, "").strip()
+    if not code:
         return {}
-    scheme = str(config.get("auth_scheme") or config.get("认证方案") or "Bearer").strip()
-    return {"Authorization": f"{scheme} {token}".strip()}
+    header = str(config.get("auth_header") or config.get("安全码请求头") or "X-Card-Audit-Code").strip()
+    headers = {header: code}
+    # 兼容服务器切换期间的旧 Bearer 校验；新服务器只读取安全码请求头。
+    if header.lower() != "authorization":
+        headers["Authorization"] = f"Bearer {code}"
+    return headers
 
 
 def normalize_remote_config(config: dict[str, Any], config_url: str) -> dict[str, Any]:
@@ -221,19 +215,13 @@ def normalize_remote_config(config: dict[str, Any], config_url: str) -> dict[str
     return binding
 
 
-def load_remote_document(config_url: str, token_override: str = "") -> tuple[Path, dict[str, Any], dict[str, Any]]:
-    bootstrap_token = token_override.strip() or os.environ.get(REMOTE_TOKEN_ENV, "").strip()
-    if not bootstrap_token:
-        try:
-            bootstrap_token = REMOTE_TOKEN_FILE.read_text(encoding="ascii").strip()
-        except (OSError, UnicodeError):
-            bootstrap_token = ""
-    bootstrap_headers = {"Authorization": f"Bearer {bootstrap_token}"} if bootstrap_token else {}
+def load_remote_document(config_url: str, code_override: str = "") -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    bootstrap_headers = remote_auth_headers({"session_code": code_override}, code_override)
     config, _ = fetch_json_url(config_url, bootstrap_headers)
     binding = normalize_remote_config(config, config_url)
-    if token_override.strip():
-        binding["session_token"] = token_override.strip()
-    document, headers = fetch_json_url(binding["document_url"], remote_auth_headers(binding, token_override))
+    if code_override.strip():
+        binding["session_code"] = code_override.strip()
+    document, headers = fetch_json_url(binding["document_url"], remote_auth_headers(binding, code_override))
     if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
         raise RuntimeError("远程数据不是有效的卡牌校对 JSON（缺少“卡牌”数组）")
     cache_path: Path = binding["cache_path"]
@@ -1068,18 +1056,18 @@ class VisualAuditEditor(tk.Tk):
         if not config_url:
             messagebox.showerror("远程配置无效", "缺少远程配置 URL。")
             return
-        token = str(self.remote_sync.get("session_token") or "").strip()
-        if not token:
+        code = str(self.remote_sync.get("session_code") or "").strip()
+        if not code:
             settings = ask_remote_settings(self, config_url)
             if not settings:
                 return
-            config_url, token = settings
+            config_url, code = settings
             self.remote_sync["config_url"] = config_url
         self.status_var.set("正在从远程加载校对文件…")
 
         def worker() -> None:
             try:
-                path, binding, document = load_remote_document(config_url, token)
+                path, binding, document = load_remote_document(config_url, code)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
             except Exception as exc:
                 detail = str(exc)
@@ -1092,12 +1080,12 @@ class VisualAuditEditor(tk.Tk):
         settings = ask_remote_settings(self, current)
         if not settings:
             return
-        config_url, token = settings
+        config_url, code = settings
         self.status_var.set("正在验证远程配置并加载校对文件…")
 
         def worker() -> None:
             try:
-                path, binding, document = load_remote_document(config_url, token)
+                path, binding, document = load_remote_document(config_url, code)
                 save_remote_config_url(config_url)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
             except Exception as exc:
