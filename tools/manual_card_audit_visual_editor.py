@@ -1778,10 +1778,29 @@ class VisualAuditEditor(tk.Tk):
         script = f"""$target = {ps_quote(str(target))}
 $downloaded = {ps_quote(str(downloaded))}
 $dataFile = {ps_quote(str(self.path))}
-while (Get-Process -Id {os.getpid()} -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }}
-Move-Item -LiteralPath $downloaded -Destination $target -Force
-Start-Process -FilePath $target -ArgumentList @($dataFile)
-Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force
+$processId = {os.getpid()}
+$log = $target + '.update.log'
+while (Get-Process -Id $processId -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }}
+$updated = $false
+for ($attempt = 0; $attempt -lt 60; $attempt++) {{
+    try {{
+        Copy-Item -LiteralPath $downloaded -Destination $target -Force -ErrorAction Stop
+        if ((Get-Item -LiteralPath $target).Length -eq (Get-Item -LiteralPath $downloaded).Length) {{
+            $updated = $true
+            break
+        }}
+    }} catch {{
+        $_ | Out-File -LiteralPath $log -Append -Encoding utf8
+    }}
+    Start-Sleep -Milliseconds 500
+}}
+if (-not $updated) {{
+    'EXE replacement failed after retries' | Out-File -LiteralPath $log -Append -Encoding utf8
+    exit 1
+}}
+Remove-Item -LiteralPath $downloaded -Force -ErrorAction SilentlyContinue
+Start-Process -FilePath $target -ArgumentList @($dataFile) -WorkingDirectory (Split-Path -Parent $target)
+Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 """
         script_path.write_text(script, encoding="utf-8-sig")
         creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
