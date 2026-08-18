@@ -78,7 +78,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.3"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.5"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -190,6 +190,10 @@ class VisualAuditEditor(tk.Tk):
         self._build()
         self.load_document(path)
         self.after_idle(self.maximize_window)
+        # Steam Deck 和小尺寸 PC 屏幕会把右侧编辑表单的最小宽度挤压到
+        # 中间预览栏只剩几十像素。启动后自动进入大图专注模式，用户仍可
+        # 点击“返回校对布局”恢复完整编辑界面。
+        self.after(180, self.apply_adaptive_preview_layout)
         self.after(1800, lambda: self.check_for_updates(silent=True))
 
     def _build(self) -> None:
@@ -1657,6 +1661,18 @@ class VisualAuditEditor(tk.Tk):
             self.editor_frame.grid()
             self.image_focus_label.set("大图预览")
         self.after_idle(self.refresh_image)
+
+    def apply_adaptive_preview_layout(self) -> None:
+        """在 Steam Deck/小屏幕上优先保证卡图可读。"""
+        if self.image_focus_mode:
+            return
+        try:
+            width = self.winfo_width()
+            height = self.winfo_height()
+            if width <= 1400 or height <= 900:
+                self.toggle_image_focus()
+        except tk.TclError:
+            pass
 
     def maximize_window(self) -> None:
         try:
