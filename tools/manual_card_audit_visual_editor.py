@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.10"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.11"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -329,6 +329,8 @@ class VisualAuditEditor(tk.Tk):
         self.dirty = False
         self.backup_done = False
         self.loading = False
+        self.document_load_generation = 0
+        self.document_ready = False
         self.user_modified_current = False
         self.pending_revision_numbers: set[str] = set()
         self.status_var = tk.StringVar(value="正在加载…")
@@ -949,6 +951,9 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(buttons, text="应用高级JSON", command=self.apply_advanced).pack(side="left", padx=3)
 
     def load_document_async(self, path: Path, remote_sync: dict[str, Any] | None = None) -> None:
+        self.document_load_generation += 1
+        generation = self.document_load_generation
+        self.document_ready = False
         self.status_var.set(f"正在加载 {path.name}…")
 
         def worker() -> None:
@@ -956,26 +961,43 @@ class VisualAuditEditor(tk.Tk):
                 document = json.loads(path.read_text(encoding="utf-8-sig"))
                 if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
                     raise ValueError("文件缺少“卡牌”数组")
-                self.after(0, lambda: self.apply_document_data(path, document, remote_sync))
+                self.after(0, lambda: self.apply_document_data(path, document, remote_sync, generation))
             except Exception as exc:
                 detail = str(exc)
                 self.after(0, lambda detail=detail: messagebox.showerror("打开失败", f"无法读取：{path}\n\n{detail}"))
 
         threading.Thread(target=worker, name="card-audit-load-document", daemon=True).start()
 
-    def apply_document_data(self, path: Path, document: dict[str, Any], remote_sync: dict[str, Any] | None = None) -> None:
+    def apply_document_data(
+        self,
+        path: Path,
+        document: dict[str, Any],
+        remote_sync: dict[str, Any] | None = None,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self.document_load_generation:
+            return
         self.document = document
         self.cards = self.document.get("卡牌", [])
         self.by_number = {str(card.get("编号")): card for card in self.cards}
         self.path = path
         self.remote_sync = remote_sync
         self.pending_revision_numbers.clear()
+        # 先把窗口交还给 Tk，避免 111MB 文档的索引和首张大图缩放阻塞首屏。
+        self.status_var.set(f"已读取 {len(self.cards)} 张卡，正在建立索引…")
+        self.after_idle(lambda: self.finish_document_load(generation))
+
+    def finish_document_load(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self.document_load_generation:
+            return
         self.refresh_choice_catalogs()
         self.populate_list()
+        self.document_ready = True
+        self.status_var.set(f"已加载 {len(self.cards)} 张卡｜表单校对模式")
         if self.cards:
             self.card_list.selection_set(0)
-            self.on_card_select()
-        self.status_var.set(f"已加载 {len(self.cards)} 张卡｜表单校对模式")
+            # 首张卡图再延后一帧，确保列表和窗口先显示出来。
+            self.after_idle(self.on_card_select)
 
     def load_document(self, path: Path, remote_sync: dict[str, Any] | None = None) -> None:
         """同步接口仅供已在后台读取完成的旧调用；普通打开使用异步版本。"""
@@ -986,7 +1008,7 @@ class VisualAuditEditor(tk.Tk):
         except Exception as exc:
             messagebox.showerror("打开失败", f"无法读取：{path}\n\n{exc}")
             return
-        self.apply_document_data(path, document, remote_sync)
+        self.apply_document_data(path, document, remote_sync, self.document_load_generation)
 
     def load_remote(self) -> None:
         if not self.remote_sync:
