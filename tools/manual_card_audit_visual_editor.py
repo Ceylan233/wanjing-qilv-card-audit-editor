@@ -78,7 +78,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.0"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.3"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -1713,9 +1713,9 @@ class VisualAuditEditor(tk.Tk):
         if sys.platform == "win32" and getattr(sys, "frozen", False):
             asset_name = WINDOWS_UPDATE_ASSET
             target = Path(sys.executable).resolve()
-        elif os.environ.get("APPIMAGE"):
+        elif os.environ.get("APPIMAGE") or os.environ.get("CARD_AUDIT_APPIMAGE_PATH"):
             asset_name = LINUX_UPDATE_ASSET
-            target = Path(os.environ["APPIMAGE"]).resolve()
+            target = Path(os.environ.get("APPIMAGE") or os.environ["CARD_AUDIT_APPIMAGE_PATH"]).resolve()
         else:
             messagebox.showinfo("无法自动安装", "源码运行模式不会替换程序文件，请使用发布版 EXE 或 AppImage。")
             return
@@ -1764,6 +1764,7 @@ class VisualAuditEditor(tk.Tk):
                 environment = os.environ.copy()
                 environment.pop("APPIMAGE", None)
                 environment["APPIMAGE_EXTRACT_AND_RUN"] = "1"
+                environment["CARD_AUDIT_APPIMAGE_PATH"] = str(target)
                 subprocess.Popen([str(target), str(self.path)], env=environment, start_new_session=True)
                 self.destroy()
         except Exception as exc:
@@ -2111,6 +2112,9 @@ def ui_self_test(path: Path) -> int:
 
 def main() -> int:
     args = sys.argv[1:]
+    if "--version" in args:
+        print(f"v{EDITOR_VERSION}")
+        return 0
     path_args = [arg for arg in args if not arg.startswith("--")]
     path = Path(path_args[0]) if path_args else DEFAULT_JSON
     if not path.exists():
