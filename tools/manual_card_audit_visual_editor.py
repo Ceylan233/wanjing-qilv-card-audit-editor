@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.11"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.12"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -2130,12 +2130,17 @@ class VisualAuditEditor(tk.Tk):
             return "'" + value.replace("'", "''") + "'"
 
         script_path = target.with_name(f".{target.stem}.update.ps1")
-        script = f"""$target = {ps_quote(str(target))}
+        script = f"""$ErrorActionPreference = 'Continue'
+$target = {ps_quote(str(target))}
 $downloaded = {ps_quote(str(downloaded))}
 $dataFile = {ps_quote(str(self.path))}
 $processId = {os.getpid()}
 $log = $target + '.update.log'
-while (Get-Process -Id $processId -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }}
+'Updater started' | Out-File -LiteralPath $log -Encoding utf8
+for ($wait = 0; $wait -lt 120; $wait++) {{
+    if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {{ break }}
+    Start-Sleep -Milliseconds 250
+}}
 $updated = $false
 for ($attempt = 0; $attempt -lt 60; $attempt++) {{
     try {{
@@ -2154,16 +2159,35 @@ if (-not $updated) {{
     exit 1
 }}
 Remove-Item -LiteralPath $downloaded -Force -ErrorAction SilentlyContinue
-Start-Process -FilePath $target -ArgumentList @($dataFile) -WorkingDirectory (Split-Path -Parent $target)
+Start-Process -FilePath $target -ArgumentList @($dataFile) -WorkingDirectory (Split-Path -Parent $target) -WindowStyle Hidden
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 """
         script_path.write_text(script, encoding="utf-8-sig")
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-        subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
-            creationflags=creation_flags,
-            close_fds=True,
-        )
+        command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)]
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        try:
+            subprocess.Popen(command, creationflags=creation_flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        except OSError:
+            # 某些 Windows 安全策略会拒绝 DETACHED_PROCESS，退回无窗口启动。
+            subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+
+
+def resume_pending_windows_update() -> bool:
+    """恢复上次已下载但未执行的 Windows 更新，避免更新文件永久留在目录。"""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+    target = Path(sys.executable).resolve()
+    downloaded = target.with_name(f".{target.name}.update")
+    script_path = target.with_name(f".{target.stem}.update.ps1")
+    if not downloaded.exists() or not script_path.exists():
+        return False
+    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)]
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(command, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError:
+        subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    return True
 
     def rotate_image(self, delta: int) -> None:
         if not self.current_number:
@@ -2484,6 +2508,8 @@ def option_value(args: list[str], name: str) -> str:
 
 
 def main() -> int:
+    if resume_pending_windows_update():
+        return 0
     args = sys.argv[1:]
     if "--version" in args:
         print(f"v{EDITOR_VERSION}")
