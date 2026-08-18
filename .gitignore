@@ -1,0 +1,17 @@
+# This public repository is intentionally limited to the editor release source.
+/*
+!/.github/
+!/.github/**
+!/.editorconfig
+!/.gitattributes
+!/.gitignore
+!/README.md
+!/icon.svg
+!/tools/
+
+/tools/*
+!/tools/manual_card_audit_visual_editor.py
+!/tools/build_manual_card_audit_appimage.sh
+!/tools/test_card_audit_linux_gui.sh
+!/tools/steamdeck_card_audit_launcher.sh
+!/tools/STEAM_DECK_CARD_AUDIT_README.txt

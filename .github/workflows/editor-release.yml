@@ -1,0 +1,77 @@
+name: Card Audit Editor Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "editor-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: python -m pip install --upgrade pyinstaller pillow
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .build, release | Out-Null
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name wanjing-card-audit-editor-windows `
+            --distpath release --workpath .build/windows-work --specpath .build `
+            --hidden-import PIL._tkinter_finder `
+            tools/manual_card_audit_visual_editor.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-editor
+          path: release/wanjing-card-audit-editor-windows.exe
+
+  linux:
+    name: Build Steam Deck AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-venv python3-tk wget file squashfs-tools zstd
+      - name: Build AppImage
+        run: |
+          bash tools/build_manual_card_audit_appimage.sh
+          mkdir -p release
+          cp "校对工具/万境奇旅卡牌校对编辑器.AppImage" release/wanjing-card-audit-editor-linux.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-editor
+          path: release/wanjing-card-audit-editor-linux.AppImage
+
+  release:
+    name: Publish Release
+    if: startsWith(github.ref, 'refs/tags/editor-v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-editor"
+          merge-multiple: true
+          path: release
+      - name: Create checksums
+        working-directory: release
+        run: sha256sum wanjing-card-audit-editor-windows.exe wanjing-card-audit-editor-linux.AppImage > SHA256SUMS.txt
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "万境奇旅卡牌校对编辑器 ${GITHUB_REF_NAME}" \
+            --generate-notes
