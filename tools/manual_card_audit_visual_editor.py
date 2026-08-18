@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.17"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.18"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -828,7 +828,14 @@ class VisualAuditEditor(tk.Tk):
         tab.rowconfigure(1, weight=1)
         tab.rowconfigure(3, weight=2)
         tab.columnconfigure(0, weight=1)
-        ttk.Label(tab, text="抵达事件、地点行动与图画内行动").grid(row=0, column=0, sticky="w")
+        action_toolbar = ttk.Frame(tab)
+        action_toolbar.grid(row=0, column=0, sticky="ew")
+        ttk.Label(action_toolbar, text="抵达事件、地点行动与图画内行动").pack(side="left")
+        ttk.Button(action_toolbar, text="新增地点行动", command=lambda: self.add_action("地点行动")).pack(side="right", padx=2)
+        ttk.Button(action_toolbar, text="新增图画内行动", command=lambda: self.add_action("图画内地点行动")).pack(side="right", padx=2)
+        ttk.Button(action_toolbar, text="新增抵达事件", command=self.add_arrival_event).pack(side="right", padx=2)
+        ttk.Button(action_toolbar, text="复制所选", command=self.duplicate_action).pack(side="right", padx=2)
+        ttk.Button(action_toolbar, text="删除所选", command=self.delete_action).pack(side="right", padx=2)
         self.action_tree = ttk.Treeview(tab, columns=("kind", "text", "book", "entry", "cost", "status"), show="headings", height=9)
         for col, label, width in [("kind", "类型", 95), ("text", "行动/事件", 220), ("book", "故事书", 90), ("entry", "条目", 60), ("cost", "花费", 50), ("status", "状态", 85)]:
             self.action_tree.heading(col, text=label)
@@ -1418,6 +1425,119 @@ class VisualAuditEditor(tk.Tk):
             else:
                 lines.append(str(value))
         return "\n".join(lines)
+
+    def make_manual_action(self, card: dict[str, Any], section: str, index: int) -> dict[str, Any]:
+        number = str(card.get("编号"))
+        uid = f"action:{number}:manual:{section}:{index + 1:02d}"
+        event_uid = f"story:manual:{number}:{section}:{index + 1:02d}"
+        return {
+            "行动UID": uid,
+            "行动来源类型": {"原值": "manual", "中文": "人工新增行动"},
+            "行动家族": "自定义",
+            "行动文字": "新行动",
+            "故事书": {"原值": "", "中文": ""},
+            "故事条目": None,
+            "执行状态": "未执行",
+            "对应地图事件": {
+                "事件UID": event_uid,
+                "标题": "",
+                "中文正文": "",
+                "花费": None,
+                "结构化效果": [],
+                "结构化选项": [],
+                "事件来源": "manual_visual_editor",
+            },
+        }
+
+    def make_manual_arrival_event(self, card: dict[str, Any], index: int) -> dict[str, Any]:
+        number = str(card.get("编号"))
+        return {
+            "事件UID": f"arrival:{number}:manual:{index + 1:02d}",
+            "text": "新抵达事件",
+            "execution_status": "未执行",
+            "commands": [],
+            "事件来源": "manual_visual_editor",
+        }
+
+    def action_lists(self, card: dict[str, Any], section: str) -> list[dict[str, Any]]:
+        if section == "arrival":
+            events = card.setdefault("地图", {}).setdefault("地图事件", {})
+            return events.setdefault("抵达强制事件", [])
+        return card.setdefault("地图", {}).setdefault(section, [])
+
+    def select_action_row(self, section: str, index: int) -> None:
+        iid = f"{section}:{index}"
+        self.populate_actions(self.by_number[self.current_number])
+        if self.action_tree.exists(iid):
+            self.action_tree.selection_set(iid)
+            self.action_tree.focus(iid)
+            self.action_tree.see(iid)
+            self.on_action_select()
+
+    def add_action(self, section: str) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        actions = self.action_lists(card, section)
+        self.push_undo(self.current_number, card)
+        actions.append(self.make_manual_action(card, section, len(actions)))
+        self.mark_card_revised(card)
+        self.dirty = True
+        self.current_action_ref = None
+        self.select_action_row(section, len(actions) - 1)
+        self.status_var.set(f"已新增{('地点行动' if section == '地点行动' else '图画内行动')}，尚未写入磁盘")
+
+    def add_arrival_event(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        events = self.action_lists(card, "arrival")
+        self.push_undo(self.current_number, card)
+        events.append(self.make_manual_arrival_event(card, len(events)))
+        self.mark_card_revised(card)
+        self.dirty = True
+        self.current_action_ref = None
+        self.select_action_row("arrival", len(events) - 1)
+        self.status_var.set("已新增抵达事件，尚未写入磁盘")
+
+    def duplicate_action(self) -> None:
+        if not self.current_number or not self.current_action_ref:
+            messagebox.showinfo("复制事件/行动", "请先选择一条事件或行动。")
+            return
+        section, index = self.current_action_ref
+        card = self.by_number[self.current_number]
+        items = self.action_lists(card, section)
+        if index >= len(items):
+            return
+        self.push_undo(self.current_number, card)
+        copied = deepcopy(items[index])
+        copied["事件来源"] = "manual_visual_editor"
+        items.insert(index + 1, copied)
+        self.mark_card_revised(card)
+        self.dirty = True
+        self.current_action_ref = None
+        self.select_action_row(section, index + 1)
+        self.status_var.set("已复制事件/行动，尚未写入磁盘")
+
+    def delete_action(self) -> None:
+        if not self.current_number or not self.current_action_ref:
+            messagebox.showinfo("删除事件/行动", "请先选择一条事件或行动。")
+            return
+        section, index = self.current_action_ref
+        card = self.by_number[self.current_number]
+        items = self.action_lists(card, section)
+        if index >= len(items):
+            return
+        if not messagebox.askyesno("删除事件/行动", "确定删除当前选中的事件/行动吗？", parent=self):
+            return
+        self.push_undo(self.current_number, card)
+        items.pop(index)
+        self.mark_card_revised(card)
+        self.dirty = True
+        self.current_action_ref = None
+        self.populate_actions(card)
+        self.refresh_advanced()
+        self.status_var.set("已删除事件/行动，尚未写入磁盘")
 
     def populate_actions(self, card: dict[str, Any]) -> None:
         self.action_tree.delete(*self.action_tree.get_children())
