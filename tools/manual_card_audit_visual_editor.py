@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.19"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.20"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -316,7 +316,7 @@ def ask_remote_settings(parent: tk.Misc, current_url: str = "") -> tuple[str, st
     dialog.resizable(False, False)
     dialog.grab_set()
     url_var = tk.StringVar(value=current_url)
-    token_var = tk.StringVar()
+    token_var = tk.StringVar(value=read_saved_security_code())
     body = ttk.Frame(dialog, padding=14)
     body.grid(sticky="nsew")
     body.columnconfigure(1, weight=1)
@@ -1107,7 +1107,7 @@ class VisualAuditEditor(tk.Tk):
         if not config_url:
             messagebox.showerror("远程配置无效", "缺少远程配置 URL。")
             return
-        code = str(self.remote_sync.get("session_code") or "").strip()
+        code = str(self.remote_sync.get("session_code") or "").strip() or read_saved_security_code()
         if not code:
             settings = ask_remote_settings(self, config_url)
             if not settings:
@@ -1138,6 +1138,7 @@ class VisualAuditEditor(tk.Tk):
             try:
                 path, binding, document = load_remote_document(config_url, code)
                 save_remote_config_url(config_url)
+                save_security_code(code)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
             except Exception as exc:
                 detail = str(exc)
@@ -1146,6 +1147,8 @@ class VisualAuditEditor(tk.Tk):
         threading.Thread(target=worker, name="card-audit-remote-config", daemon=True).start()
 
     def apply_remote_document(self, path: Path, binding: dict[str, Any], document: dict[str, Any]) -> None:
+        if str(binding.get("session_code") or "").strip():
+            save_security_code(str(binding["session_code"]))
         self.apply_document_data(path, document, binding)
         self.status_var.set(f"已从远程加载 {len(self.cards)} 张卡｜可开始校对")
 
