@@ -1682,7 +1682,8 @@ class VisualAuditEditor(tk.Tk):
                 release = json.loads((payload or b"{}").decode("utf-8"))
                 self.after(0, lambda: self.handle_update_release(release, silent))
             except Exception as exc:
-                self.after(0, lambda: self.handle_update_error(str(exc), silent))
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_update_error(detail, silent))
 
         threading.Thread(target=worker, name="editor-update-check", daemon=True).start()
 
@@ -1746,7 +1747,8 @@ class VisualAuditEditor(tk.Tk):
                 self.after(0, lambda: self.install_downloaded_update(target, downloaded))
             except Exception as exc:
                 downloaded.unlink(missing_ok=True)
-                self.after(0, lambda: self.handle_update_error(str(exc), False))
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_update_error(detail, False))
 
         threading.Thread(target=worker, name="editor-update-download", daemon=True).start()
 
