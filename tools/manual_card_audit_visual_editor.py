@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import stat
+import ssl
 import subprocess
 import sys
 import threading
@@ -19,6 +20,12 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
+from urllib.parse import unquote
+
+try:
+    import certifi
+except ImportError:  # 源码环境未安装时仍尝试使用系统证书
+    certifi = None
 
 from PIL import Image, ImageDraw, ImageTk
 
@@ -78,7 +85,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.6"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.7"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -92,13 +99,65 @@ def version_numbers(value: str) -> tuple[int, ...]:
 
 def download_url(url: str, target: Path | None = None) -> bytes | None:
     request = urllib.request.Request(url, headers={"User-Agent": f"wanjing-card-audit-editor/{EDITOR_VERSION}"})
-    with urllib.request.urlopen(request, timeout=60) as response:
+    with urllib.request.urlopen(request, timeout=60, context=build_ssl_context()) as response:
         if target is None:
             return response.read()
         with target.open("wb") as output:
             while chunk := response.read(1024 * 1024):
                 output.write(chunk)
     return None
+
+
+def build_ssl_context() -> ssl.SSLContext:
+    """为 PyInstaller/AppImage 显式寻找 CA 证书，避免 Steam Deck 缺省路径为空。"""
+    candidates: list[str] = []
+    configured = os.environ.get("SSL_CERT_FILE")
+    if configured:
+        candidates.append(configured)
+    if certifi is not None:
+        try:
+            candidates.append(certifi.where())
+        except Exception:
+            pass
+    candidates.extend([
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+    ])
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return ssl.create_default_context(cafile=candidate)
+    return ssl.create_default_context()
+
+
+def fetch_latest_release() -> dict[str, Any]:
+    """读取最新版本；GitHub API 受限时改用 releases/latest 网页重定向。"""
+    api_url = f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
+    try:
+        payload = download_url(api_url)
+        return json.loads((payload or b"{}").decode("utf-8"))
+    except Exception as api_exc:
+        try:
+            page_url = f"https://github.com/{UPDATE_REPOSITORY}/releases/latest"
+            request = urllib.request.Request(page_url, headers={"User-Agent": f"wanjing-card-audit-editor/{EDITOR_VERSION}"})
+            with urllib.request.urlopen(request, timeout=60, context=build_ssl_context()) as response:
+                final_url = response.geturl()
+            match = re.search(r"/releases/tag/([^/?#]+)", final_url)
+            if not match:
+                raise RuntimeError(f"未能从 GitHub 重定向地址识别版本：{final_url}")
+            tag = unquote(match.group(1))
+            download_base = f"https://github.com/{UPDATE_REPOSITORY}/releases/download/{tag}"
+            return {
+                "tag_name": tag,
+                "body": "通过 GitHub 网页备用通道检查到的版本。",
+                "assets": [
+                    {"name": WINDOWS_UPDATE_ASSET, "browser_download_url": f"{download_base}/{WINDOWS_UPDATE_ASSET}"},
+                    {"name": LINUX_UPDATE_ASSET, "browser_download_url": f"{download_base}/{LINUX_UPDATE_ASSET}"},
+                    {"name": UPDATE_CHECKSUM_ASSET, "browser_download_url": f"{download_base}/{UPDATE_CHECKSUM_ASSET}"},
+                ],
+            }
+        except Exception as fallback_exc:
+            raise RuntimeError(f"GitHub API 检查失败：{api_exc}；网页备用检查也失败：{fallback_exc}") from fallback_exc
 
 
 def parse_int(value: str) -> int | None:
@@ -1681,8 +1740,7 @@ class VisualAuditEditor(tk.Tk):
 
         def worker() -> None:
             try:
-                payload = download_url(f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest")
-                release = json.loads((payload or b"{}").decode("utf-8"))
+                release = fetch_latest_release()
                 self.after(0, lambda: self.handle_update_release(release, silent))
             except Exception as exc:
                 detail = str(exc)

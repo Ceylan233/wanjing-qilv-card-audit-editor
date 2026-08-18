@@ -19,11 +19,12 @@ VENV_DIR="$BUILD_DIR/venv"
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
-"$VENV_DIR/bin/python" -m pip install --upgrade pip pyinstaller pillow
+"$VENV_DIR/bin/python" -m pip install --upgrade pip pyinstaller pillow certifi
 "$VENV_DIR/bin/python" -m PyInstaller --noconfirm --clean --onefile --name manual-card-audit-editor-linux \
   --distpath "$BUILD_DIR/dist" \
   --workpath "$BUILD_DIR/work" \
   --specpath "$BUILD_DIR" \
+  --collect-data certifi \
   --hidden-import PIL._tkinter_finder \
   "$PROJECT_DIR/tools/manual_card_audit_visual_editor.py"
 

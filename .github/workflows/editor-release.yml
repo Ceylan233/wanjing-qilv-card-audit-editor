@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build dependencies
-        run: python -m pip install --upgrade pyinstaller pillow
+        run: python -m pip install --upgrade pyinstaller pillow certifi
       - name: Build EXE
         shell: pwsh
         env:
@@ -29,6 +29,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
             --name wanjing-card-audit-editor-windows `
             --distpath release --workpath .build/windows-work --specpath .build `
+            --collect-data certifi `
             --hidden-import PIL._tkinter_finder `
             tools/manual_card_audit_visual_editor.py
       - uses: actions/upload-artifact@v4
