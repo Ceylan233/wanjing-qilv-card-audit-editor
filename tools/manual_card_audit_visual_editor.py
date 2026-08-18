@@ -78,7 +78,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.5"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.6"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -190,16 +190,15 @@ class VisualAuditEditor(tk.Tk):
         self._build()
         self.load_document(path)
         self.after_idle(self.maximize_window)
-        # Steam Deck 和小尺寸 PC 屏幕会把右侧编辑表单的最小宽度挤压到
-        # 中间预览栏只剩几十像素。启动后自动进入大图专注模式，用户仍可
-        # 点击“返回校对布局”恢复完整编辑界面。
-        self.after(180, self.apply_adaptive_preview_layout)
         self.after(1800, lambda: self.check_for_updates(silent=True))
 
     def _build(self) -> None:
         self.rowconfigure(1, weight=1)
-        self.columnconfigure(1, weight=3)
-        self.columnconfigure(2, weight=2)
+        # 三栏均保持可用宽度；编辑表单内部有滚动区，不能让它的默认
+        # Text(80 列)请求宽度把中央卡图挤成缩略图。
+        self.columnconfigure(0, weight=0, minsize=220)
+        self.columnconfigure(1, weight=5, minsize=360)
+        self.columnconfigure(2, weight=4, minsize=560)
         toolbar = ttk.Frame(self, padding=6)
         toolbar.grid(row=0, column=0, columnspan=3, sticky="ew")
         mainbar = ttk.Frame(toolbar)
@@ -452,7 +451,7 @@ class VisualAuditEditor(tk.Tk):
         list_wrap = ttk.Frame(frame)
         list_wrap.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
         list_wrap.rowconfigure(0, weight=1)
-        self.card_list = tk.Listbox(list_wrap, width=25, exportselection=False, font=("Microsoft YaHei UI", 10))
+        self.card_list = tk.Listbox(list_wrap, width=20, exportselection=False, font=("Microsoft YaHei UI", 10))
         self.card_list.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(list_wrap, orient="vertical", command=self.card_list.yview)
         sb.grid(row=0, column=1, sticky="ns")
@@ -534,11 +533,11 @@ class VisualAuditEditor(tk.Tk):
         self.base_value_combo = add_combo(tab, 5, "价值", self.base_value, NUMBER_CHOICES)
         add_entry(tab, 6, "贴图路径", self.base_texture, readonly=True)
         ttk.Label(tab, text="识别到的基础文本").grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 3))
-        self.base_detected_text = tk.Text(tab, height=12, wrap="word", bg="#f0f0f0")
+        self.base_detected_text = tk.Text(tab, width=44, height=12, wrap="word", bg="#f0f0f0")
         self.base_detected_text.grid(row=8, column=0, columnspan=2, sticky="nsew", padx=6)
         self.base_detected_text.configure(state="disabled")
         ttk.Label(tab, text="人工修订基础文本").grid(row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 3))
-        self.base_text = tk.Text(tab, height=12, wrap="word")
+        self.base_text = tk.Text(tab, width=44, height=12, wrap="word")
         self.base_text.grid(row=10, column=0, columnspan=2, sticky="nsew", padx=6)
         ttk.Button(tab, text="应用本页修改", command=self.commit_current).grid(row=11, column=1, sticky="e", padx=6, pady=8)
 
@@ -621,9 +620,9 @@ class VisualAuditEditor(tk.Tk):
         right = ttk.LabelFrame(detail, text="结构化效果与选项（可读摘要）", padding=4)
         detail.add(left, weight=1)
         detail.add(right, weight=1)
-        self.action_event_text = tk.Text(left, wrap="word")
+        self.action_event_text = tk.Text(left, width=30, wrap="word")
         self.action_event_text.pack(fill="both", expand=True)
-        self.action_structure = tk.Text(right, wrap="word", bg="#f0f0f0")
+        self.action_structure = tk.Text(right, width=30, wrap="word", bg="#f0f0f0")
         self.action_structure.pack(fill="both", expand=True)
         self.action_structure.configure(state="disabled")
         ttk.Button(tab, text="应用所选事件/行动修改", command=self.apply_action).grid(row=4, column=0, sticky="e", pady=5)
@@ -717,13 +716,13 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(boost_box, text="新增强化槽", command=self.add_boost_slot).grid(row=2, column=0, sticky="w", pady=3)
         ttk.Button(boost_box, text="删除所选强化槽", command=self.delete_boost_slot).grid(row=2, column=1, sticky="w", padx=3, pady=3)
         ttk.Label(tab, text="放置效果（每行一项）").grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.small_placement = tk.Text(tab, height=7, wrap="word")
+        self.small_placement = tk.Text(tab, width=44, height=7, wrap="word")
         self.small_placement.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(tab, text="技能效果/强化异能（可读文本）").grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.small_skills = tk.Text(tab, height=10, wrap="word")
+        self.small_skills = tk.Text(tab, width=44, height=10, wrap="word")
         self.small_skills.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(tab, text="技能花销（每行一项）").grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.small_costs = tk.Text(tab, height=7, wrap="word")
+        self.small_costs = tk.Text(tab, width=44, height=7, wrap="word")
         self.small_costs.grid(row=11, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Button(tab, text="应用小卡/强化修改", command=self.commit_current).grid(row=12, column=1, sticky="e", padx=6, pady=8)
 
@@ -733,13 +732,13 @@ class VisualAuditEditor(tk.Tk):
         ttk.Label(tab, text="总校对状态").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         ttk.Combobox(tab, textvariable=self.review_status, values=["未校对", "校对中", "已核验", "有问题"], state="readonly").grid(row=0, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(tab, text="问题列表（每行一项）").grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.review_issues = tk.Text(tab, height=14, wrap="word")
+        self.review_issues = tk.Text(tab, width=44, height=14, wrap="word")
         self.review_issues.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(tab, text="校对备注").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.review_notes = tk.Text(tab, height=14, wrap="word")
+        self.review_notes = tk.Text(tab, width=44, height=14, wrap="word")
         self.review_notes.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(tab, text="待AI处理提示词（不知道如何填写或修改时写在这里）", foreground="#8a3f00").grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.review_ai_prompt = tk.Text(tab, height=10, wrap="word", bg="#fff8dc")
+        self.review_ai_prompt = tk.Text(tab, width=44, height=10, wrap="word", bg="#fff8dc")
         self.review_ai_prompt.grid(row=6, column=0, columnspan=2, sticky="ew", padx=6)
         buttons = ttk.Frame(tab)
         buttons.grid(row=7, column=0, columnspan=2, sticky="e", padx=6, pady=8)
@@ -753,7 +752,7 @@ class VisualAuditEditor(tk.Tk):
         tab.rowconfigure(1, weight=1)
         tab.columnconfigure(0, weight=1)
         ttk.Label(tab, text="普通校对无需使用本页；仅处理表单无法覆盖的罕见结构。", foreground="#9b4d00").grid(row=0, column=0, sticky="w")
-        self.advanced_text = tk.Text(tab, wrap="none", font=("Consolas", 9), undo=True)
+        self.advanced_text = tk.Text(tab, width=44, wrap="none", font=("Consolas", 9), undo=True)
         self.advanced_text.grid(row=1, column=0, sticky="nsew", pady=5)
         buttons = ttk.Frame(tab)
         buttons.grid(row=2, column=0, sticky="e")
@@ -1661,18 +1660,6 @@ class VisualAuditEditor(tk.Tk):
             self.editor_frame.grid()
             self.image_focus_label.set("大图预览")
         self.after_idle(self.refresh_image)
-
-    def apply_adaptive_preview_layout(self) -> None:
-        """在 Steam Deck/小屏幕上优先保证卡图可读。"""
-        if self.image_focus_mode:
-            return
-        try:
-            width = self.winfo_width()
-            height = self.winfo_height()
-            if width <= 1400 or height <= 900:
-                self.toggle_image_focus()
-        except tk.TclError:
-            pass
 
     def maximize_window(self) -> None:
         try:
