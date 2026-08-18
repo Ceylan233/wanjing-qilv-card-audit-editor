@@ -15,10 +15,11 @@ import sys
 import threading
 import tkinter as tk
 import urllib.request
+from urllib.error import HTTPError
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 from urllib.parse import unquote
 
@@ -85,11 +86,15 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.7"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.8"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
 UPDATE_CHECKSUM_ASSET = "SHA256SUMS.txt"
+REMOTE_CONFIG_ENV = "CARD_AUDIT_REMOTE_CONFIG_URL"
+REMOTE_TOKEN_ENV = "CARD_AUDIT_SYNC_TOKEN"
+REMOTE_CACHE_DIR = Path.home() / ".wanjing-card-audit-editor"
+REMOTE_URL_FILE = REMOTE_CACHE_DIR / "remote_config_url.txt"
 
 
 def version_numbers(value: str) -> tuple[int, ...]:
@@ -160,6 +165,79 @@ def fetch_latest_release() -> dict[str, Any]:
             raise RuntimeError(f"GitHub API 检查失败：{api_exc}；网页备用检查也失败：{fallback_exc}") from fallback_exc
 
 
+def fetch_json_url(url: str, headers: dict[str, str] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+    request_headers = {"User-Agent": f"wanjing-card-audit-editor/{EDITOR_VERSION}"}
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, headers=request_headers)
+    with urllib.request.urlopen(request, timeout=60, context=build_ssl_context()) as response:
+        payload = json.loads(response.read().decode("utf-8-sig"))
+        return payload, {str(key): str(value) for key, value in response.headers.items()}
+
+
+def remote_auth_headers(config: dict[str, Any]) -> dict[str, str]:
+    token_env = str(config.get("token_env") or config.get("令牌环境变量") or REMOTE_TOKEN_ENV).strip()
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        return {}
+    scheme = str(config.get("auth_scheme") or config.get("认证方案") or "Bearer").strip()
+    return {"Authorization": f"{scheme} {token}".strip()}
+
+
+def normalize_remote_config(config: dict[str, Any], config_url: str) -> dict[str, Any]:
+    nested = config.get("远程校对") if isinstance(config.get("远程校对"), dict) else config
+    document_url = str(
+        nested.get("document_url")
+        or nested.get("data_url")
+        or nested.get("读取URL")
+        or nested.get("数据URL")
+        or (config_url if "卡牌" in config else "")
+    ).strip()
+    if not document_url:
+        raise RuntimeError("远程配置缺少 document_url/data_url（数据读取 URL）")
+    cache_name = str(nested.get("cache_file") or nested.get("本地缓存") or "manual_card_audit.remote.json").strip()
+    cache_path = Path(cache_name).expanduser()
+    if not cache_path.is_absolute():
+        cache_path = REMOTE_CACHE_DIR / cache_path
+    binding = dict(nested)
+    binding.update({
+        "config_url": config_url,
+        "document_url": document_url,
+        "upload_url": str(nested.get("upload_url") or nested.get("write_url") or nested.get("上传URL") or "").strip(),
+        "method": str(nested.get("method") or nested.get("写入方法") or "PUT").upper(),
+        "cache_path": cache_path,
+        "auto_sync": bool(nested.get("auto_sync", nested.get("自动同步", True))),
+    })
+    return binding
+
+
+def load_remote_document(config_url: str) -> tuple[Path, dict[str, Any]]:
+    bootstrap_token = os.environ.get(REMOTE_TOKEN_ENV, "").strip()
+    bootstrap_headers = {"Authorization": f"Bearer {bootstrap_token}"} if bootstrap_token else {}
+    config, _ = fetch_json_url(config_url, bootstrap_headers)
+    binding = normalize_remote_config(config, config_url)
+    document, headers = fetch_json_url(binding["document_url"], remote_auth_headers(binding))
+    if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
+        raise RuntimeError("远程数据不是有效的卡牌校对 JSON（缺少“卡牌”数组）")
+    cache_path: Path = binding["cache_path"]
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    binding["etag"] = headers.get("ETag") or headers.get("Etag") or ""
+    return cache_path, binding
+
+
+def save_remote_config_url(config_url: str) -> None:
+    REMOTE_URL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    REMOTE_URL_FILE.write_text(config_url.strip() + "\n", encoding="utf-8")
+
+
+def read_saved_remote_config_url() -> str:
+    try:
+        return REMOTE_URL_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
 def parse_int(value: str) -> int | None:
     value = value.strip()
     if not value:
@@ -207,7 +285,7 @@ def add_combo(parent: tk.Widget, row: int, label: str, variable: tk.StringVar, v
 
 
 class VisualAuditEditor(tk.Tk):
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, remote_sync: dict[str, Any] | None = None):
         super().__init__()
         self.title(f"万境奇旅｜卡牌可视化人工校对器 v{EDITOR_VERSION}")
         screen_width = self.winfo_screenwidth()
@@ -215,6 +293,9 @@ class VisualAuditEditor(tk.Tk):
         self.geometry(f"{min(1880, screen_width)}x{min(1080, screen_height)}+0+0")
         self.minsize(min(1180, max(900, screen_width - 80)), min(760, max(600, screen_height - 80)))
         self.path = path
+        self.remote_sync: dict[str, Any] | None = remote_sync
+        self.remote_sync_running = False
+        self.closing = False
         self.document: dict[str, Any] = {}
         self.cards: list[dict[str, Any]] = []
         self.by_number: dict[str, dict[str, Any]] = {}
@@ -262,29 +343,42 @@ class VisualAuditEditor(tk.Tk):
         toolbar.grid(row=0, column=0, columnspan=3, sticky="ew")
         mainbar = ttk.Frame(toolbar)
         mainbar.pack(fill="x")
-        viewbar = ttk.Frame(toolbar)
-        viewbar.pack(fill="x", pady=(4, 0))
-        ttk.Button(mainbar, text="打开校对文件", command=self.open_document).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="保存到磁盘 Ctrl+S", command=self.save_all).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="撤回 Ctrl+Z", command=self.undo_card_change).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="重做 Ctrl+Y", command=self.redo_card_change).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="复制槽位", command=self.copy_selected_slot).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="粘贴槽位", command=self.paste_selected_slot).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="导出待AI卡片", command=self.export_ai_prompt_cards).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="检查更新", command=self.check_for_updates).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="上一张 ←", command=lambda: self.select_relative(-1)).pack(side="left", padx=3)
-        ttk.Button(mainbar, text="下一张 →", command=lambda: self.select_relative(1)).pack(side="left", padx=3)
+        editbar = ttk.Frame(toolbar)
+        editbar.pack(fill="x", pady=(2, 0))
+        file_group = ttk.LabelFrame(mainbar, text="文件")
+        file_group.pack(side="left", padx=2)
+        sync_group = ttk.LabelFrame(mainbar, text="网络同步")
+        sync_group.pack(side="left", padx=2)
+        edit_group = ttk.LabelFrame(editbar, text="编辑")
+        edit_group.pack(side="left", padx=2)
+        nav_group = ttk.LabelFrame(mainbar, text="导航")
+        nav_group.pack(side="left", padx=2)
+        ttk.Button(file_group, text="打开校对文件", command=self.open_document).pack(side="left", padx=2, pady=2)
+        ttk.Button(file_group, text="保存到磁盘 Ctrl+S", command=self.save_all).pack(side="left", padx=2, pady=2)
+        ttk.Button(file_group, text="导出待AI卡片", command=self.export_ai_prompt_cards).pack(side="left", padx=2, pady=2)
+        ttk.Button(sync_group, text="配置远程", command=self.configure_remote).pack(side="left", padx=2, pady=2)
+        ttk.Button(sync_group, text="加载远程", command=self.load_remote).pack(side="left", padx=2, pady=2)
+        ttk.Button(sync_group, text="上传/同步远程", command=self.sync_remote).pack(side="left", padx=2, pady=2)
+        ttk.Button(edit_group, text="撤回 Ctrl+Z", command=self.undo_card_change).pack(side="left", padx=2, pady=2)
+        ttk.Button(edit_group, text="重做 Ctrl+Y", command=self.redo_card_change).pack(side="left", padx=2, pady=2)
+        ttk.Button(edit_group, text="复制槽位", command=self.copy_selected_slot).pack(side="left", padx=2, pady=2)
+        ttk.Button(edit_group, text="粘贴槽位", command=self.paste_selected_slot).pack(side="left", padx=2, pady=2)
+        ttk.Button(nav_group, text="检查更新", command=self.check_for_updates).pack(side="left", padx=2, pady=2)
+        ttk.Button(nav_group, text="上一张 ←", command=lambda: self.select_relative(-1)).pack(side="left", padx=2, pady=2)
+        ttk.Button(nav_group, text="下一张 →", command=lambda: self.select_relative(1)).pack(side="left", padx=2, pady=2)
         ttk.Label(mainbar, textvariable=self.status_var).pack(side="right", padx=8)
-        ttk.Button(viewbar, textvariable=self.image_focus_label, command=self.toggle_image_focus).pack(side="left", padx=3)
-        ttk.Checkbutton(viewbar, text="显示槽位框", variable=self.overlay_var, command=self.refresh_image).pack(side="left", padx=10)
-        ttk.Checkbutton(viewbar, text="显示调整手柄", variable=self.slot_edit_var, command=self.refresh_image).pack(side="left", padx=4)
-        ttk.Button(viewbar, text="图片−", command=lambda: self.change_zoom(0.85)).pack(side="left")
-        ttk.Button(viewbar, text="适应窗口", command=self.reset_zoom).pack(side="left", padx=3)
-        ttk.Button(viewbar, text="原始清晰度 1:1", command=self.set_actual_size).pack(side="left", padx=3)
-        ttk.Button(viewbar, text="图片+", command=lambda: self.change_zoom(1.18)).pack(side="left")
-        ttk.Button(viewbar, text="左转90°", command=lambda: self.rotate_image(-90)).pack(side="left", padx=(10, 2))
-        ttk.Button(viewbar, text="右转90°", command=lambda: self.rotate_image(90)).pack(side="left", padx=2)
-        ttk.Button(viewbar, text="恢复方向", command=self.reset_rotation).pack(side="left", padx=2)
+        viewbar = ttk.LabelFrame(toolbar, text="图片预览")
+        viewbar.pack(fill="x", pady=(4, 0))
+        ttk.Button(viewbar, textvariable=self.image_focus_label, command=self.toggle_image_focus).pack(side="left", padx=3, pady=2)
+        ttk.Checkbutton(viewbar, text="显示槽位框", variable=self.overlay_var, command=self.refresh_image).pack(side="left", padx=10, pady=2)
+        ttk.Checkbutton(viewbar, text="显示调整手柄", variable=self.slot_edit_var, command=self.refresh_image).pack(side="left", padx=4, pady=2)
+        ttk.Button(viewbar, text="图片−", command=lambda: self.change_zoom(0.85)).pack(side="left", pady=2)
+        ttk.Button(viewbar, text="适应窗口", command=self.reset_zoom).pack(side="left", padx=3, pady=2)
+        ttk.Button(viewbar, text="原始清晰度 1:1", command=self.set_actual_size).pack(side="left", padx=3, pady=2)
+        ttk.Button(viewbar, text="图片+", command=lambda: self.change_zoom(1.18)).pack(side="left", pady=2)
+        ttk.Button(viewbar, text="左转90°", command=lambda: self.rotate_image(-90)).pack(side="left", padx=(10, 2), pady=2)
+        ttk.Button(viewbar, text="右转90°", command=lambda: self.rotate_image(90)).pack(side="left", padx=2, pady=2)
+        ttk.Button(viewbar, text="恢复方向", command=self.reset_rotation).pack(side="left", padx=2, pady=2)
 
         self._build_card_list()
         self._build_image_panel()
@@ -818,7 +912,7 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(buttons, text="从表单刷新JSON", command=self.refresh_advanced).pack(side="left", padx=3)
         ttk.Button(buttons, text="应用高级JSON", command=self.apply_advanced).pack(side="left", padx=3)
 
-    def load_document(self, path: Path) -> None:
+    def load_document(self, path: Path, remote_sync: dict[str, Any] | None = None) -> None:
         try:
             self.document = json.loads(path.read_text(encoding="utf-8-sig"))
             self.cards = self.document.get("卡牌", [])
@@ -827,6 +921,7 @@ class VisualAuditEditor(tk.Tk):
             messagebox.showerror("打开失败", f"无法读取：{path}\n\n{exc}")
             return
         self.path = path
+        self.remote_sync = remote_sync
         self.pending_revision_numbers.clear()
         self.refresh_choice_catalogs()
         self.populate_list()
@@ -834,6 +929,122 @@ class VisualAuditEditor(tk.Tk):
             self.card_list.selection_set(0)
             self.on_card_select()
         self.status_var.set(f"已加载 {len(self.cards)} 张卡｜表单校对模式")
+
+    def load_remote(self) -> None:
+        if not self.remote_sync:
+            self.configure_remote()
+            return
+        if self.dirty:
+            answer = messagebox.askyesnocancel("有未保存修改", "重新加载远程文件会丢弃当前未保存修改，是否继续？")
+            if answer is not True:
+                return
+        config_url = str(self.remote_sync.get("config_url") or "").strip()
+        if not config_url:
+            messagebox.showerror("远程配置无效", "缺少远程配置 URL。")
+            return
+        self.status_var.set("正在从远程加载校对文件…")
+
+        def worker() -> None:
+            try:
+                path, binding = load_remote_document(config_url)
+                self.after(0, lambda: self.apply_remote_document(path, binding))
+            except Exception as exc:
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程加载失败", detail))
+
+        threading.Thread(target=worker, name="card-audit-remote-load", daemon=True).start()
+
+    def configure_remote(self) -> None:
+        current = str(self.remote_sync.get("config_url") if self.remote_sync else "")
+        config_url = simpledialog.askstring(
+            "配置远程校对",
+            "输入线上配置 JSON URL（阿里云 OSS 对象地址或预签名 URL）：",
+            initialvalue=current,
+            parent=self,
+        )
+        if not config_url or not config_url.strip():
+            return
+        config_url = config_url.strip()
+        self.status_var.set("正在验证远程配置并加载校对文件…")
+
+        def worker() -> None:
+            try:
+                path, binding = load_remote_document(config_url)
+                save_remote_config_url(config_url)
+                self.after(0, lambda: self.apply_remote_document(path, binding))
+            except Exception as exc:
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程配置失败", detail))
+
+        threading.Thread(target=worker, name="card-audit-remote-config", daemon=True).start()
+
+    def apply_remote_document(self, path: Path, binding: dict[str, Any]) -> None:
+        self.load_document(path, binding)
+        self.status_var.set(f"已从远程加载 {len(self.cards)} 张卡｜可开始校对")
+
+    def sync_remote(self, notify: bool = True) -> None:
+        if not self.remote_sync:
+            self.configure_remote()
+            return
+        upload_url = str(self.remote_sync.get("upload_url") or "").strip()
+        if not upload_url:
+            messagebox.showerror("远程配置只读", "配置中没有 upload_url/上传URL，当前只能读取，无法上传。")
+            return
+        if self.remote_sync_running:
+            self.status_var.set("远程同步正在进行，请稍候…")
+            return
+        self.commit_current()
+        self.document["卡牌"] = self.cards
+        payload = (json.dumps(self.document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        binding = dict(self.remote_sync)
+        self.remote_sync_running = True
+        self.status_var.set("正在上传并同步远程校对文件…")
+
+        def worker() -> None:
+            try:
+                headers = remote_auth_headers(binding)
+                headers["Content-Type"] = "application/json; charset=utf-8"
+                etag = str(binding.get("etag") or "").strip()
+                if etag:
+                    headers["If-Match"] = etag
+                request = urllib.request.Request(
+                    upload_url,
+                    data=payload,
+                    headers=headers,
+                    method=str(binding.get("method") or "PUT").upper(),
+                )
+                with urllib.request.urlopen(request, timeout=120, context=build_ssl_context()) as response:
+                    new_etag = response.headers.get("ETag") or response.headers.get("Etag") or etag
+                self.after(0, lambda: self.handle_remote_success(new_etag, notify))
+            except HTTPError as exc:
+                if exc.code == 412:
+                    detail = "远程文件已被其他设备修改，本次上传已阻止。请先点击“加载远程”，确认差异后再提交。"
+                else:
+                    detail = f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程同步失败", detail, notify))
+            except Exception as exc:
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程同步失败", detail, notify))
+
+        threading.Thread(target=worker, name="card-audit-remote-sync", daemon=True).start()
+
+    def handle_remote_success(self, etag: str, notify: bool) -> None:
+        self.remote_sync_running = False
+        if self.remote_sync is not None:
+            self.remote_sync["etag"] = etag
+        self.status_var.set("远程校对文件已同步｜其他设备可加载最新内容")
+        if notify:
+            messagebox.showinfo("远程同步完成", "校对 JSON 已上传；卡图和本地资源未上传。")
+        if self.closing:
+            self.destroy()
+
+    def handle_remote_error(self, title: str, detail: str, notify: bool = True) -> None:
+        self.remote_sync_running = False
+        self.status_var.set(title)
+        if notify:
+            messagebox.showerror(title, detail)
+        if self.closing:
+            self.destroy()
 
     def refresh_choice_catalogs(self) -> None:
         """从当前数据生成只读选择项，兼容已有合法值。"""
@@ -2125,20 +2336,29 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
         self.dirty = False
         self.populate_list()
         self.status_var.set(f"已安全写入 {self.path.name}｜{len(self.cards)} 张卡")
+        if self.remote_sync and self.remote_sync.get("auto_sync", True):
+            self.sync_remote(notify=False)
 
     def open_document(self) -> None:
         path = filedialog.askopenfilename(title="打开校对JSON", filetypes=[("JSON", "*.json")])
         if path:
-            self.load_document(Path(path))
+            self.load_document(Path(path), None)
 
     def on_close(self) -> None:
+        if self.remote_sync_running:
+            self.closing = True
+            self.status_var.set("正在完成远程同步，完成后退出…")
+            return
         self.commit_current()
         if self.dirty:
             answer = messagebox.askyesnocancel("有未保存修改", "是否保存到磁盘后退出？")
             if answer is None:
                 return
             if answer:
+                self.closing = True
                 self.save_all()
+                if self.remote_sync and self.remote_sync_running:
+                    return
         self.destroy()
 
 
@@ -2173,20 +2393,56 @@ def ui_self_test(path: Path) -> int:
     return 0
 
 
+def option_value(args: list[str], name: str) -> str:
+    prefix = f"{name}="
+    for index, arg in enumerate(args):
+        if arg.startswith(prefix):
+            return arg[len(prefix):].strip()
+        if arg == name and index + 1 < len(args):
+            return args[index + 1].strip()
+    return ""
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--version" in args:
         print(f"v{EDITOR_VERSION}")
         return 0
-    path_args = [arg for arg in args if not arg.startswith("--")]
-    path = Path(path_args[0]) if path_args else DEFAULT_JSON
+    path_args: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--remote-config-url":
+            skip_next = True
+            continue
+        if not arg.startswith("--"):
+            path_args.append(arg)
+    remote_url = option_value(args, "--remote-config-url") or os.environ.get(REMOTE_CONFIG_ENV, "").strip()
+    if not remote_url and not path_args:
+        remote_url = read_saved_remote_config_url()
+    remote_sync: dict[str, Any] | None = None
+    if remote_url and not path_args:
+        try:
+            path, remote_sync = load_remote_document(remote_url)
+        except Exception as exc:
+            cached = REMOTE_CACHE_DIR / "manual_card_audit.remote.json"
+            if cached.exists():
+                path = cached
+                print(f"远程加载失败，已使用本地缓存：{exc}", file=sys.stderr)
+            else:
+                print(f"远程配置/校对文件加载失败：{exc}", file=sys.stderr)
+                return 2
+    else:
+        path = Path(path_args[0]) if path_args else DEFAULT_JSON
     if not path.exists():
         return 2
     if "--ui-self-test" in args:
         return ui_self_test(path)
     if "--self-test" in args:
         return self_test(path)
-    VisualAuditEditor(path).mainloop()
+    VisualAuditEditor(path, remote_sync).mainloop()
     return 0
 
 
