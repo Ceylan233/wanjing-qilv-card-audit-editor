@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.16"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.17"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -724,11 +724,33 @@ class VisualAuditEditor(tk.Tk):
         self._build_review_tab()
         self._build_advanced_tab()
 
+    def _build_status_bar(self, parent: tk.Misc) -> ttk.Frame:
+        bar = ttk.Frame(parent, padding=(6, 4))
+        ttk.Label(bar, text="标记当前卡牌：").pack(side="left", padx=(0, 5))
+        for label, status in (("未修订", "未修订"), ("已核验", "已核验")):
+            ttk.Button(bar, text=f"标记为{label}", command=lambda value=status: self.mark_review_status(value)).pack(side="left", padx=2)
+        return bar
+
+    def _prepend_status_bar(self, tab: ttk.Frame) -> None:
+        """给非滚动标签页顶部插入统一状态栏，并平移已有网格控件。"""
+        columns, rows = tab.grid_size()
+        weights = [tab.grid_rowconfigure(row).get("weight", 0) for row in range(rows)]
+        for child in tab.grid_slaves():
+            info = child.grid_info()
+            child.grid_configure(row=int(info.get("row", 0)) + 1)
+        for row, weight in enumerate(weights):
+            tab.grid_rowconfigure(row + 1, weight=weight)
+        tab.grid_rowconfigure(0, weight=0)
+        bar = self._build_status_bar(tab)
+        bar.grid(row=0, column=0, columnspan=max(1, columns), sticky="ew")
+
     def _scroll_tab(self, title: str) -> ttk.Frame:
         outer = ttk.Frame(self.tabs)
         self.tabs.add(outer, text=title)
-        outer.rowconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=0)
+        outer.rowconfigure(1, weight=1)
         outer.columnconfigure(0, weight=1)
+        self._build_status_bar(outer).grid(row=0, column=0, columnspan=2, sticky="ew")
         canvas = tk.Canvas(outer, highlightthickness=0)
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas, padding=8)
@@ -737,8 +759,8 @@ class VisualAuditEditor(tk.Tk):
         inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
-        canvas.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.grid(row=1, column=0, sticky="nsew")
+        scrollbar.grid(row=1, column=1, sticky="ns")
         return inner
 
     def _build_basic_tab(self) -> None:
@@ -851,6 +873,7 @@ class VisualAuditEditor(tk.Tk):
         self.action_structure.pack(fill="both", expand=True)
         self.action_structure.configure(state="disabled")
         ttk.Button(tab, text="应用所选事件/行动修改", command=self.apply_action).grid(row=4, column=0, sticky="e", pady=5)
+        self._prepend_status_bar(tab)
 
     def _build_slots_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
@@ -912,6 +935,7 @@ class VisualAuditEditor(tk.Tk):
         ttk.Label(form, text="卡面坐标 [x1,y1,x2,y2]（固定334×327，只可移动）").grid(row=9, column=0, sticky="w", padx=3)
         ttk.Entry(form, textvariable=self.slot_coords).grid(row=9, column=1, columnspan=5, sticky="ew", padx=3)
         ttk.Button(form, text="应用所选骰槽修改", command=self.apply_slot).grid(row=10, column=4, columnspan=2, sticky="e", pady=5)
+        self._prepend_status_bar(tab)
 
     def _build_small_tab(self) -> None:
         tab = self._scroll_tab("小卡/强化/技能")
@@ -983,6 +1007,7 @@ class VisualAuditEditor(tk.Tk):
         buttons.grid(row=2, column=0, sticky="e")
         ttk.Button(buttons, text="从表单刷新JSON", command=self.refresh_advanced).pack(side="left", padx=3)
         ttk.Button(buttons, text="应用高级JSON", command=self.apply_advanced).pack(side="left", padx=3)
+        self._prepend_status_bar(tab)
 
     def load_document_async(self, path: Path, remote_sync: dict[str, Any] | None = None) -> None:
         self.document_load_generation += 1
@@ -1917,10 +1942,22 @@ class VisualAuditEditor(tk.Tk):
         self.refresh_advanced()
 
     def mark_verified(self) -> None:
-        self.review_status.set("已核验")
-        self.user_modified_current = True
-        self.commit_current()
+        self.mark_review_status("已核验")
+
+    def mark_review_status(self, status: str) -> None:
+        """从任意标签页快速设置当前卡牌的校对状态。"""
+        if not self.current_number:
+            return
+        if status == "未修订":
+            self.mark_current_unrevised()
+            self.review_status.set("未校对")
+            self.commit_current()
+        else:
+            self.review_status.set(status)
+            self.user_modified_current = True
+            self.commit_current()
         self.filter_cards()
+        self.status_var.set(f"卡牌 {self.current_number} 已标记为{status}")
 
     def refresh_advanced(self) -> None:
         if not self.current_number:
