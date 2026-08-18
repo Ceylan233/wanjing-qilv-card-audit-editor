@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=wanjing-audit
+Group=wanjing-audit
 WorkingDirectory=/opt/wanjing-card-audit
 EnvironmentFile=/etc/wanjing-card-audit-sync.env
 ExecStart=/usr/bin/python3 /opt/wanjing-card-audit/remote_card_audit_server.py
@@ -13,6 +14,9 @@ Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/wanjing-card-audit/data
 
 [Install]
 WantedBy=multi-user.target
