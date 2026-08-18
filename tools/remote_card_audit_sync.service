@@ -1,0 +1,18 @@
+[Unit]
+Description=Wanjing card audit JSON sync service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wanjing-card-audit
+EnvironmentFile=/etc/wanjing-card-audit-sync.env
+ExecStart=/usr/bin/python3 /opt/wanjing-card-audit/remote_card_audit_server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

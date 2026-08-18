@@ -16,7 +16,7 @@
 
 ## 多设备远程校对
 
-编辑器支持从线上配置读取校对 JSON，并通过 HTTPS `PUT`/`POST` 上传同步。阿里云 OSS 建议使用对象读取 URL和上传预签名 URL，示例见 `tools/remote_card_audit_config.example.json`。配置文件中只放 URL 和参数，不要放 AccessKey/Secret；令牌放在每台设备的环境变量 `CARD_AUDIT_SYNC_TOKEN` 中。
+编辑器支持从线上配置读取校对 JSON，并通过 HTTPS `PUT`/`POST` 上传同步。阿里云 OSS 建议使用对象读取 URL和上传预签名 URL，示例见 `tools/remote_card_audit_config.example.json`。配置文件中只放 URL 和参数，不要放 AccessKey/Secret；令牌可放在每台设备的环境变量 `CARD_AUDIT_SYNC_TOKEN`，也可保存到配置指定的本地 `token_file`。
 
 启动时设置线上配置 URL：
 

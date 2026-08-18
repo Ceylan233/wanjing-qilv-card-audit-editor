@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.8"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.9"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -95,6 +95,7 @@ REMOTE_CONFIG_ENV = "CARD_AUDIT_REMOTE_CONFIG_URL"
 REMOTE_TOKEN_ENV = "CARD_AUDIT_SYNC_TOKEN"
 REMOTE_CACHE_DIR = Path.home() / ".wanjing-card-audit-editor"
 REMOTE_URL_FILE = REMOTE_CACHE_DIR / "remote_config_url.txt"
+REMOTE_TOKEN_FILE = REMOTE_CACHE_DIR / "sync_token.txt"
 
 
 def version_numbers(value: str) -> tuple[int, ...]:
@@ -178,6 +179,14 @@ def fetch_json_url(url: str, headers: dict[str, str] | None = None) -> tuple[dic
 def remote_auth_headers(config: dict[str, Any]) -> dict[str, str]:
     token_env = str(config.get("token_env") or config.get("令牌环境变量") or REMOTE_TOKEN_ENV).strip()
     token = os.environ.get(token_env, "").strip()
+    token_file = str(config.get("token_file") or config.get("令牌文件") or REMOTE_TOKEN_FILE).strip()
+    if not token_file:
+        token_file = str(REMOTE_TOKEN_FILE)
+    if not token:
+        try:
+            token = Path(token_file).expanduser().read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            token = ""
     if not token:
         return {}
     scheme = str(config.get("auth_scheme") or config.get("认证方案") or "Bearer").strip()
@@ -213,6 +222,11 @@ def normalize_remote_config(config: dict[str, Any], config_url: str) -> dict[str
 
 def load_remote_document(config_url: str) -> tuple[Path, dict[str, Any]]:
     bootstrap_token = os.environ.get(REMOTE_TOKEN_ENV, "").strip()
+    if not bootstrap_token:
+        try:
+            bootstrap_token = REMOTE_TOKEN_FILE.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            bootstrap_token = ""
     bootstrap_headers = {"Authorization": f"Bearer {bootstrap_token}"} if bootstrap_token else {}
     config, _ = fetch_json_url(config_url, bootstrap_headers)
     binding = normalize_remote_config(config, config_url)

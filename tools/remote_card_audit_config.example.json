@@ -4,6 +4,7 @@
     "upload_url": "https://your-bucket.oss-cn-hangzhou.aliyuncs.com/card-audit/manual_card_audit.json?<上传签名参数>",
     "method": "PUT",
     "token_env": "CARD_AUDIT_SYNC_TOKEN",
+    "token_file": "~/.wanjing-card-audit-editor/sync_token.txt",
     "cache_file": "manual_card_audit.remote.json",
     "auto_sync": true
   }
