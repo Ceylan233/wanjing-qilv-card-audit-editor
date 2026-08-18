@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.13"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.14"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -2170,31 +2170,6 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
         except OSError:
             # 某些 Windows 安全策略会拒绝 DETACHED_PROCESS，退回无窗口启动。
             subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-
-
-def resume_pending_windows_update() -> bool:
-    """恢复上次已下载但未执行的 Windows 更新，避免更新文件永久留在目录。"""
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
-        return False
-    target = Path(sys.executable).resolve()
-    downloaded = target.with_name(f".{target.name}.update")
-    script_path = target.with_name(f".{target.stem}.update.ps1")
-    if not downloaded.exists() or not script_path.exists():
-        return False
-    try:
-        # 只恢复新格式脚本，避免旧版本残留包被误执行造成版本回退。
-        if "'Updater started'" not in script_path.read_text(encoding="utf-8-sig"):
-            return False
-    except OSError:
-        return False
-    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)]
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    try:
-        subprocess.Popen(command, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    except OSError:
-        subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    return True
-
     def rotate_image(self, delta: int) -> None:
         if not self.current_number:
             return
@@ -2470,6 +2445,30 @@ def resume_pending_windows_update() -> bool:
                 if self.remote_sync and self.remote_sync_running:
                     return
         self.destroy()
+
+
+def resume_pending_windows_update() -> bool:
+    """恢复上次已下载但未执行的 Windows 更新，避免更新文件永久留在目录。"""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+    target = Path(sys.executable).resolve()
+    downloaded = target.with_name(f".{target.name}.update")
+    script_path = target.with_name(f".{target.stem}.update.ps1")
+    if not downloaded.exists() or not script_path.exists():
+        return False
+    try:
+        # 只恢复新格式脚本，避免旧版本残留包被误执行造成版本回退。
+        if "'Updater started'" not in script_path.read_text(encoding="utf-8-sig"):
+            return False
+    except OSError:
+        return False
+    command = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script_path)]
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(command, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    except OSError:
+        subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    return True
 
 
 def self_test(path: Path) -> int:
