@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 DATA_FILE = Path(os.environ.get("CARD_AUDIT_DATA_FILE", "/opt/wanjing-card-audit/data/manual_card_audit.json"))
+STORY_DATA_FILE = Path(os.environ.get("CARD_AUDIT_STORY_DATA_FILE", "/opt/wanjing-card-audit/data/story_review_entries_narrowed.json"))
 PUBLIC_BASE_URL = os.environ.get("CARD_AUDIT_PUBLIC_BASE_URL", "https://syncinema.pw/wanjing-card-audit").rstrip("/")
 SECURITY_CODE = os.environ.get("CARD_AUDIT_SECURITY_CODE", "")
 HOST = os.environ.get("CARD_AUDIT_BIND_HOST", "127.0.0.1")
@@ -68,7 +69,15 @@ class Handler(BaseHTTPRequestHandler):
                     "auth_header": "X-Card-Audit-Code",
                     "认证方式": "窗口输入安全码",
                     "auto_sync": True,
-                }
+                },
+                "故事文本核验": {
+                    "document_url": f"{PUBLIC_BASE_URL}/story_review_entries_narrowed.json",
+                    "upload_url": f"{PUBLIC_BASE_URL}/story_review_entries_narrowed.json",
+                    "method": "PUT",
+                    "auth_header": "X-Card-Audit-Code",
+                    "认证方式": "窗口输入安全码",
+                    "auto_sync": False,
+                },
             })
             return
         if self.path == "/wanjing-card-audit/manual_card_audit.json":
@@ -77,6 +86,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = DATA_FILE.read_bytes()
             etag = etag_for(DATA_FILE)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", etag)
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/wanjing-card-audit/story_review_entries_narrowed.json":
+            if not STORY_DATA_FILE.exists():
+                self.send_json(404, {"error": "story review file not found"})
+                return
+            body = STORY_DATA_FILE.read_bytes()
+            etag = etag_for(STORY_DATA_FILE)
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -93,7 +115,13 @@ class Handler(BaseHTTPRequestHandler):
         self.write_document()
 
     def write_document(self) -> None:
-        if self.path != "/wanjing-card-audit/manual_card_audit.json":
+        if self.path == "/wanjing-card-audit/manual_card_audit.json":
+            target = DATA_FILE
+            document_kind = "card"
+        elif self.path == "/wanjing-card-audit/story_review_entries_narrowed.json":
+            target = STORY_DATA_FILE
+            document_kind = "story"
+        else:
             self.send_json(404, {"error": "not found"})
             return
         if not self.authorized():
@@ -107,31 +135,36 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_BODY:
             self.send_json(413, {"error": "payload too large"})
             return
-        if DATA_FILE.exists():
+        if target.exists():
             expected = self.headers.get("If-Match", "").strip()
-            if expected and expected != etag_for(DATA_FILE):
+            if expected and expected != etag_for(target):
                 self.send_json(412, {"error": "document changed on server"})
                 return
         raw = self.rfile.read(length)
         try:
             document = json.loads(raw.decode("utf-8-sig"))
-            if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
+            if not isinstance(document, dict):
+                raise ValueError("JSON root must be an object")
+            if document_kind == "card" and not isinstance(document.get("卡牌"), list):
                 raise ValueError("missing 卡牌 array")
+            if document_kind == "story" and not isinstance(document.get("items"), list):
+                raise ValueError("missing items array")
         except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
             self.send_json(400, {"error": f"invalid audit JSON: {exc}"})
             return
-        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("wb", dir=DATA_FILE.parent, delete=False) as temp:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("wb", dir=target.parent, delete=False) as temp:
             temp.write(raw)
             temp_path = Path(temp.name)
-        temp_path.replace(DATA_FILE)
-        self.send_json(200, {"ok": True}, etag_for(DATA_FILE))
+        temp_path.replace(target)
+        self.send_json(200, {"ok": True}, etag_for(target))
 
 
 def main() -> None:
     if not SECURITY_CODE:
         raise SystemExit("CARD_AUDIT_SECURITY_CODE is required")
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STORY_DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     server.serve_forever()
 

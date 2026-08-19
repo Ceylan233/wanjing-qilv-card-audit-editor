@@ -11,6 +11,10 @@ import json
 import os
 import shutil
 import tkinter as tk
+import ssl
+import threading
+import urllib.request
+from urllib.error import HTTPError
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -51,6 +55,10 @@ def project_root() -> Path:
 
 
 DEFAULT_PATH = project_root() / ".codex-temp/storybooks_ocr_zh/story_review_entries_narrowed.json"
+REMOTE_CONFIG_URL = "https://syncinema.pw/wanjing-card-audit/config.json"
+REMOTE_CACHE_DIR = Path.home() / ".wanjing-card-audit-editor"
+REMOTE_URL_FILE = REMOTE_CACHE_DIR / "remote_config_url.txt"
+REMOTE_CODE_FILE = REMOTE_CACHE_DIR / "security_code.txt"
 
 
 def readable_reasons(values: Any) -> str:
@@ -65,6 +73,59 @@ def status_label(value: Any) -> str:
 
 def as_text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def read_saved_code() -> str:
+    try:
+        return REMOTE_CODE_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
+def save_code(value: str) -> None:
+    if not value.strip():
+        return
+    REMOTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    REMOTE_CODE_FILE.write_text(value.strip() + "\n", encoding="utf-8")
+    try:
+        REMOTE_CODE_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+def read_saved_url() -> str:
+    try:
+        return REMOTE_URL_FILE.read_text(encoding="utf-8").strip() or REMOTE_CONFIG_URL
+    except (OSError, UnicodeError):
+        return REMOTE_CONFIG_URL
+
+
+def save_url(value: str) -> None:
+    REMOTE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    REMOTE_URL_FILE.write_text(value.strip() + "\n", encoding="utf-8")
+
+
+def ssl_context() -> ssl.SSLContext:
+    return ssl.create_default_context()
+
+
+def remote_get(url: str, code: str) -> tuple[dict[str, Any], str]:
+    request = urllib.request.Request(url, headers={"X-Card-Audit-Code": code, "User-Agent": "wanjing-story-review-editor"})
+    with urllib.request.urlopen(request, timeout=90, context=ssl_context()) as response:
+        payload = json.loads(response.read().decode("utf-8-sig"))
+        return payload, str(response.headers.get("ETag") or "")
+
+
+def remote_binding(config_url: str, code: str) -> tuple[dict[str, Any], str]:
+    config, _ = remote_get(config_url, code)
+    nested = config.get("故事文本核验") if isinstance(config.get("故事文本核验"), dict) else {}
+    document_url = str(nested.get("document_url") or "").strip()
+    upload_url = str(nested.get("upload_url") or document_url).strip()
+    if not document_url or not upload_url:
+        raise RuntimeError("远程配置缺少“故事文本核验”文档 URL")
+    binding = dict(nested)
+    binding.update({"config_url": config_url, "document_url": document_url, "upload_url": upload_url})
+    return binding, ""
 
 
 class StoryReviewEditor(tk.Toplevel):
@@ -100,6 +161,9 @@ class StoryReviewEditor(tk.Toplevel):
         self.checked_refs_var = tk.BooleanVar()
         self.uncertain_var = tk.BooleanVar()
         self._filtered_indices: list[int] = []
+        self.remote_sync: dict[str, Any] | None = None
+        self.remote_sync_running = False
+        self.remote_etag = ""
         self._build()
         self.load_file(self.path)
         self.protocol("WM_DELETE_WINDOW", self.close_window)
@@ -130,8 +194,10 @@ class StoryReviewEditor(tk.Toplevel):
         self.status_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_list())
         ttk.Button(toolbar, text="保存", command=self.save_file).grid(row=0, column=5, padx=4)
         ttk.Button(toolbar, text="重新打开", command=self.reload_file).grid(row=0, column=6, padx=4)
-        ttk.Button(toolbar, text="上一个", command=lambda: self.select_relative(-1)).grid(row=0, column=7, padx=4)
-        ttk.Button(toolbar, text="下一个", command=lambda: self.select_relative(1)).grid(row=0, column=8, padx=4)
+        ttk.Button(toolbar, text="远程加载", command=self.load_remote).grid(row=0, column=7, padx=4)
+        ttk.Button(toolbar, text="上传同步", command=self.sync_remote).grid(row=0, column=8, padx=4)
+        ttk.Button(toolbar, text="上一个", command=lambda: self.select_relative(-1)).grid(row=0, column=9, padx=4)
+        ttk.Button(toolbar, text="下一个", command=lambda: self.select_relative(1)).grid(row=0, column=10, padx=4)
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -378,6 +444,120 @@ class StoryReviewEditor(tk.Toplevel):
         self.path.write_text(json.dumps(self.document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         self.dirty = False
         self.status_var.set(f"已保存：{self.path.name}")
+
+    def ask_remote_settings(self) -> tuple[str, str] | None:
+        dialog = tk.Toplevel(self)
+        dialog.title("配置故事文本远程同步")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        body = ttk.Frame(dialog, padding=14)
+        body.grid(sticky="nsew")
+        url_var = tk.StringVar(value=read_saved_url())
+        code_var = tk.StringVar(value=read_saved_code())
+        ttk.Label(body, text="配置 JSON URL").grid(row=0, column=0, sticky="w", padx=4, pady=5)
+        ttk.Entry(body, textvariable=url_var, width=72).grid(row=0, column=1, padx=4, pady=5)
+        ttk.Label(body, text="安全码").grid(row=1, column=0, sticky="w", padx=4, pady=5)
+        ttk.Entry(body, textvariable=code_var, show="*", width=72).grid(row=1, column=1, padx=4, pady=5)
+        ttk.Label(body, text="故事文本会使用独立远程文件，不会覆盖卡牌校对 JSON。", foreground="#666666").grid(row=2, column=0, columnspan=2, sticky="w", padx=4, pady=5)
+        result: list[tuple[str, str] | None] = [None]
+
+        def accept() -> None:
+            url, code = url_var.get().strip(), code_var.get().strip()
+            if not url or not code:
+                messagebox.showwarning("信息不完整", "请输入配置 URL 和安全码。", parent=dialog)
+                return
+            result[0] = (url, code)
+            dialog.destroy()
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=(6, 0))
+        ttk.Button(buttons, text="取消", command=dialog.destroy).pack(side="right", padx=4)
+        ttk.Button(buttons, text="连接", command=accept).pack(side="right", padx=4)
+        dialog.bind("<Return>", lambda _event: accept())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.wait_window()
+        return result[0]
+
+    def load_remote(self) -> None:
+        if self.remote_sync_running:
+            return
+        settings = self.ask_remote_settings()
+        if not settings:
+            return
+        config_url, code = settings
+        self.status_var.set("正在加载远程故事核验文件…")
+        self.remote_sync_running = True
+
+        def worker() -> None:
+            try:
+                binding, _ = remote_binding(config_url, code)
+                document, etag = remote_get(binding["document_url"], code)
+                if not isinstance(document, dict) or not isinstance(document.get("items"), list):
+                    raise RuntimeError("远程文件不是有效的故事核验 JSON")
+                save_url(config_url)
+                save_code(code)
+                self.after(0, lambda: self.apply_remote_document(document, binding, etag))
+            except HTTPError as exc:
+                detail = "安全码不正确或服务器拒绝访问（HTTP 401）。" if exc.code == 401 else f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.remote_error(detail))
+            except Exception as exc:
+                self.after(0, lambda detail=str(exc): self.remote_error(detail))
+
+        threading.Thread(target=worker, name="story-review-remote-load", daemon=True).start()
+
+    def apply_remote_document(self, document: dict[str, Any], binding: dict[str, Any], etag: str) -> None:
+        self.remote_sync_running = False
+        self.document = document
+        self.items = list(document.get("items") or [])
+        self.remote_sync = binding
+        self.remote_etag = etag
+        self.dirty = False
+        self.refresh_list(select_first=True)
+        self.status_var.set(f"已加载远程故事核验 {len(self.items)} 条")
+
+    def sync_remote(self) -> None:
+        if self.remote_sync_running:
+            return
+        if not self.remote_sync:
+            self.load_remote()
+            return
+        self.save_current()
+        self.document["items"] = self.items
+        payload = (json.dumps(self.document, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        code = read_saved_code()
+        if not code:
+            messagebox.showwarning("未配置安全码", "请先点击“远程加载”配置安全码。", parent=self)
+            return
+        self.remote_sync_running = True
+        self.status_var.set("正在上传故事核验文件…")
+
+        def worker() -> None:
+            try:
+                headers = {"X-Card-Audit-Code": code, "Content-Type": "application/json; charset=utf-8", "User-Agent": "wanjing-story-review-editor"}
+                if self.remote_etag:
+                    headers["If-Match"] = self.remote_etag
+                request = urllib.request.Request(self.remote_sync["upload_url"], data=payload, headers=headers, method="PUT")
+                with urllib.request.urlopen(request, timeout=120, context=ssl_context()) as response:
+                    etag = str(response.headers.get("ETag") or self.remote_etag)
+                self.after(0, lambda: self.remote_success(etag))
+            except HTTPError as exc:
+                detail = "远程文件已被其他设备修改，请先重新加载。" if exc.code == 412 else f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.remote_error(detail))
+            except Exception as exc:
+                self.after(0, lambda detail=str(exc): self.remote_error(detail))
+
+        threading.Thread(target=worker, name="story-review-remote-upload", daemon=True).start()
+
+    def remote_success(self, etag: str) -> None:
+        self.remote_sync_running = False
+        self.remote_etag = etag
+        self.status_var.set("故事核验文件已上传并同步")
+
+    def remote_error(self, detail: str) -> None:
+        self.remote_sync_running = False
+        self.status_var.set("远程同步失败")
+        messagebox.showerror("故事核验远程同步失败", detail, parent=self)
 
     def mark_confirmed(self) -> None:
         self.review_status_var.set("已核验")
