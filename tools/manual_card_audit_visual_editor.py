@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.21"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.22"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -379,6 +379,7 @@ class VisualAuditEditor(tk.Tk):
         self.image_focus_mode = False
         self.image_focus_label = tk.StringVar(value="大图预览")
         self.update_check_running = False
+        self.story_review_window = None
         self.dirty = False
         self.backup_done = False
         self.loading = False
@@ -459,6 +460,10 @@ class VisualAuditEditor(tk.Tk):
         sync_menu.add_command(label="上传/同步远程", command=self.sync_remote)
         menu_bar.add_cascade(label="远程同步", menu=sync_menu)
 
+        story_menu = tk.Menu(menu_bar, tearoff=False)
+        story_menu.add_command(label="打开故事文本人工核验…", command=self.open_story_review_editor)
+        menu_bar.add_cascade(label="故事核验", menu=story_menu)
+
         edit_menu = tk.Menu(menu_bar, tearoff=False)
         edit_menu.add_command(label="撤回", accelerator="Ctrl+Z", command=self.undo_card_change)
         edit_menu.add_command(label="重做", accelerator="Ctrl+Y", command=self.redo_card_change)
@@ -494,6 +499,35 @@ class VisualAuditEditor(tk.Tk):
         menu_bar.add_cascade(label="帮助", menu=help_menu)
         self.menu_bar = menu_bar
         self.configure(menu=menu_bar)
+
+    def open_story_review_editor(self) -> None:
+        """在独立非模态窗口打开故事 OCR 核验器，主卡牌编辑器保持可用。"""
+        try:
+            from story_review_visual_editor import StoryReviewEditor
+        except Exception as exc:
+            messagebox.showerror("故事核验器不可用", str(exc), parent=self)
+            return
+        if self.story_review_window is not None:
+            try:
+                if self.story_review_window.winfo_exists():
+                    self.story_review_window.deiconify()
+                    self.story_review_window.lift()
+                    self.story_review_window.focus_force()
+                    return
+            except tk.TclError:
+                pass
+        review_path = PROJECT / ".codex-temp" / "storybooks_ocr_zh" / "story_review_entries_narrowed.json"
+        if not review_path.exists():
+            selected = filedialog.askopenfilename(
+                title="选择故事文本人工核验 JSON",
+                filetypes=[("故事核验 JSON", "story_review_entries_narrowed.json"), ("JSON 文件", "*.json"), ("全部文件", "*.*")],
+                parent=self,
+            )
+            if not selected:
+                return
+            review_path = Path(selected)
+        self.story_review_window = StoryReviewEditor(self, review_path)
+        self.story_review_window.lift()
 
     def enable_text_undo(self, widget: tk.Widget) -> None:
         for child in widget.winfo_children():
