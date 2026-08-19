@@ -86,7 +86,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.20"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.21"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -308,15 +308,15 @@ def add_combo(parent: tk.Widget, row: int, label: str, variable: tk.StringVar, v
     return combo
 
 
-def ask_remote_settings(parent: tk.Misc, current_url: str = "") -> tuple[str, str] | None:
-    """在同一个窗口配置远程 URL 和安全码；安全码不落盘。"""
+def ask_remote_settings(parent: tk.Misc, current_url: str = "", use_saved_code: bool = True) -> tuple[str, str] | None:
+    """在同一个窗口配置远程 URL 和安全码；安全码只保存在本机缓存。"""
     dialog = tk.Toplevel(parent)
     dialog.title("配置远程校对")
     dialog.transient(parent)
     dialog.resizable(False, False)
     dialog.grab_set()
     url_var = tk.StringVar(value=current_url)
-    token_var = tk.StringVar(value=read_saved_security_code())
+    token_var = tk.StringVar(value=read_saved_security_code() if use_saved_code else "")
     body = ttk.Frame(dialog, padding=14)
     body.grid(sticky="nsew")
     body.columnconfigure(1, weight=1)
@@ -326,7 +326,7 @@ def ask_remote_settings(parent: tk.Misc, current_url: str = "") -> tuple[str, st
     ttk.Label(body, text="同步安全码").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=6)
     token_entry = ttk.Entry(body, textvariable=token_var, show="*", width=68)
     token_entry.grid(row=1, column=1, sticky="ew", pady=6)
-    ttk.Label(body, text="安全码仅保存在当前运行中，不会写入 JSON 或配置文件。", foreground="#666666").grid(
+    ttk.Label(body, text="安全码只保存在本机缓存，不会写入远程 JSON。", foreground="#666666").grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(2, 8)
     )
     result: list[tuple[str, str] | None] = [None]
@@ -855,8 +855,8 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(action_toolbar, text="新增抵达事件", command=self.add_arrival_event).pack(side="right", padx=2)
         ttk.Button(action_toolbar, text="复制所选", command=self.duplicate_action).pack(side="right", padx=2)
         ttk.Button(action_toolbar, text="删除所选", command=self.delete_action).pack(side="right", padx=2)
-        self.action_tree = ttk.Treeview(tab, columns=("kind", "text", "book", "entry", "cost", "status"), show="headings", height=9)
-        for col, label, width in [("kind", "类型", 95), ("text", "行动/事件", 220), ("book", "故事书", 90), ("entry", "条目", 60), ("cost", "花费", 50), ("status", "状态", 85)]:
+        self.action_tree = ttk.Treeview(tab, columns=("kind", "text", "book", "entry", "cost", "repeatable", "status"), show="headings", height=9)
+        for col, label, width in [("kind", "类型", 95), ("text", "行动/事件", 220), ("book", "故事书", 90), ("entry", "条目", 60), ("cost", "花费", 50), ("repeatable", "始终可用", 75), ("status", "状态", 85)]:
             self.action_tree.heading(col, text=label)
             self.action_tree.column(col, width=width, anchor="w")
         self.action_tree.grid(row=1, column=0, sticky="nsew", pady=4)
@@ -873,6 +873,8 @@ class VisualAuditEditor(tk.Tk):
         self.action_cost = tk.StringVar()
         self.action_title = tk.StringVar()
         self.action_status = tk.StringVar()
+        self.action_repeatable = tk.BooleanVar(value=False)
+        self.action_usage_evidence = tk.StringVar()
         controls = [
             ("类型", ttk.Entry(form, textvariable=self.action_kind, state="readonly")),
             ("行动文字", ttk.Entry(form, textvariable=self.action_text)),
@@ -882,11 +884,14 @@ class VisualAuditEditor(tk.Tk):
             ("花费", ttk.Combobox(form, textvariable=self.action_cost, values=COST_CHOICES, state="readonly")),
             ("事件标题", ttk.Entry(form, textvariable=self.action_title)),
             ("执行状态", ttk.Combobox(form, textvariable=self.action_status, values=EXECUTION_STATES, state="readonly")),
+            ("规则依据", ttk.Entry(form, textvariable=self.action_usage_evidence)),
         ]
         for i, (label, widget) in enumerate(controls):
             r, c = divmod(i, 2)
             ttk.Label(form, text=label).grid(row=r, column=c * 2, sticky="w", padx=3, pady=2)
             widget.grid(row=r, column=c * 2 + 1, sticky="ew", padx=3, pady=2)
+        self.action_repeatable_check = ttk.Checkbutton(form, text="始终可用（可重复）", variable=self.action_repeatable)
+        self.action_repeatable_check.grid(row=5, column=0, columnspan=2, sticky="w", padx=3, pady=2)
         detail = ttk.Panedwindow(tab, orient="horizontal")
         detail.grid(row=3, column=0, sticky="nsew", pady=4)
         left = ttk.LabelFrame(detail, text="中文事件正文", padding=4)
@@ -1120,11 +1125,42 @@ class VisualAuditEditor(tk.Tk):
             try:
                 path, binding, document = load_remote_document(config_url, code)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
+            except HTTPError as exc:
+                if exc.code == 401:
+                    self.after(0, lambda: self.retry_remote_auth(config_url))
+                    return
+                detail = f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程加载失败", detail))
             except Exception as exc:
                 detail = str(exc)
                 self.after(0, lambda detail=detail: self.handle_remote_error("远程加载失败", detail))
 
         threading.Thread(target=worker, name="card-audit-remote-load", daemon=True).start()
+
+    def retry_remote_auth(self, config_url: str) -> None:
+        """旧安全码失效时清空预填值，要求重新输入后只重试一次。"""
+        settings = ask_remote_settings(self, config_url, use_saved_code=False)
+        if not settings:
+            self.status_var.set("远程加载已取消")
+            return
+        retry_url, retry_code = settings
+        self.remote_sync = {"config_url": retry_url}
+        self.status_var.set("正在使用新安全码重试远程加载…")
+
+        def worker() -> None:
+            try:
+                path, binding, document = load_remote_document(retry_url, retry_code)
+                save_remote_config_url(retry_url)
+                save_security_code(retry_code)
+                self.after(0, lambda: self.apply_remote_document(path, binding, document))
+            except HTTPError as exc:
+                detail = "安全码不正确或服务器拒绝访问（HTTP 401）。请确认安全码后重试。" if exc.code == 401 else f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程加载失败", detail))
+            except Exception as exc:
+                detail = str(exc)
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程加载失败", detail))
+
+        threading.Thread(target=worker, name="card-audit-remote-auth-retry", daemon=True).start()
 
     def configure_remote(self) -> None:
         current = str(self.remote_sync.get("config_url") if self.remote_sync else "")
@@ -1140,6 +1176,9 @@ class VisualAuditEditor(tk.Tk):
                 save_remote_config_url(config_url)
                 save_security_code(code)
                 self.after(0, lambda: self.apply_remote_document(path, binding, document))
+            except HTTPError as exc:
+                detail = "安全码不正确或服务器拒绝访问（HTTP 401）。请确认安全码后重试。" if exc.code == 401 else f"HTTP {exc.code}: {exc.reason}"
+                self.after(0, lambda detail=detail: self.handle_remote_error("远程配置失败", detail))
             except Exception as exc:
                 detail = str(exc)
                 self.after(0, lambda detail=detail: self.handle_remote_error("远程配置失败", detail))
@@ -1460,6 +1499,7 @@ class VisualAuditEditor(tk.Tk):
             "故事书": {"原值": "", "中文": ""},
             "故事条目": None,
             "执行状态": "未执行",
+            "使用规则": {"原值": "once_per_player_per_location", "是否可重复": False, "依据": "default_location_action_limit"},
             "对应地图事件": {
                 "事件UID": event_uid,
                 "标题": "",
@@ -1564,16 +1604,20 @@ class VisualAuditEditor(tk.Tk):
     def populate_actions(self, card: dict[str, Any]) -> None:
         self.action_tree.delete(*self.action_tree.get_children())
         for i, effect in enumerate(card.get("地图", {}).get("地图事件", {}).get("抵达强制事件", [])):
-            self.action_tree.insert("", "end", iid=f"arrival:{i}", values=("抵达事件", effect.get("text", ""), "", "", "", effect.get("execution_status", "")))
+            self.action_tree.insert("", "end", iid=f"arrival:{i}", values=("抵达事件", effect.get("text", ""), "", "", "", "", effect.get("execution_status", "")))
         for section, label in (("地点行动", "地点行动"), ("图画内地点行动", "图画行动")):
             for i, action in enumerate(card.get("地图", {}).get(section, [])):
                 event = action.get("对应地图事件") or {}
-                self.action_tree.insert("", "end", iid=f"{section}:{i}", values=(label, action.get("行动文字", ""), action.get("故事书", {}).get("中文", ""), action.get("故事条目", ""), event.get("花费", ""), action.get("执行状态", "")))
+                rule = action.get("使用规则") or {}
+                repeatable = bool(rule.get("是否可重复", rule.get("原值") in {"repeatable", "unrestricted"}))
+                self.action_tree.insert("", "end", iid=f"{section}:{i}", values=(label, action.get("行动文字", ""), action.get("故事书", {}).get("中文", ""), action.get("故事条目", ""), event.get("花费", ""), "是" if repeatable else "否", action.get("执行状态", "")))
         self.clear_action_form()
 
     def clear_action_form(self) -> None:
-        for var in (self.action_kind, self.action_text, self.action_family, self.action_book, self.action_entry, self.action_cost, self.action_title, self.action_status):
+        for var in (self.action_kind, self.action_text, self.action_family, self.action_book, self.action_entry, self.action_cost, self.action_title, self.action_status, self.action_usage_evidence):
             var.set("")
+        self.action_repeatable.set(False)
+        self.action_repeatable_check.configure(state="disabled")
         text_set(self.action_event_text, "")
         self.action_structure.configure(state="normal")
         text_set(self.action_structure, "")
@@ -1599,11 +1643,15 @@ class VisualAuditEditor(tk.Tk):
             self.action_cost.set("")
             self.action_title.set("")
             self.action_status.set(effect.get("execution_status", ""))
+            self.action_repeatable.set(False)
+            self.action_usage_evidence.set("")
+            self.action_repeatable_check.configure(state="disabled")
             text_set(self.action_event_text, effect.get("text", ""))
             structure = self.readable_lines(effect.get("commands", []))
         else:
             action = card["地图"][section][index]
             event = action.get("对应地图事件") or {}
+            rule = action.get("使用规则") or {}
             self.action_kind.set("图画内行动" if section == "图画内地点行动" else "地点行动")
             self.action_text.set(action.get("行动文字", ""))
             self.action_family.set(action.get("行动家族", ""))
@@ -1612,6 +1660,9 @@ class VisualAuditEditor(tk.Tk):
             self.action_cost.set("" if event.get("花费") is None else str(event.get("花费")))
             self.action_title.set(event.get("标题", "") or "")
             self.action_status.set(action.get("执行状态", ""))
+            self.action_repeatable.set(bool(rule.get("是否可重复", rule.get("原值") in {"repeatable", "unrestricted"})))
+            self.action_usage_evidence.set(str(rule.get("依据") or ""))
+            self.action_repeatable_check.configure(state="normal")
             text_set(self.action_event_text, event.get("中文正文", "") or "")
             structure = "【效果】\n" + self.readable_lines(event.get("结构化效果", [])) + "\n\n【选项】\n" + self.readable_lines(event.get("结构化选项", []))
         self.action_structure.configure(state="normal")
@@ -1638,6 +1689,11 @@ class VisualAuditEditor(tk.Tk):
             action["故事书"]["原值"] = STORY_BOOK_CODES.get(book_zh, "")
             action["故事条目"] = parse_int(self.action_entry.get())
             action["执行状态"] = self.action_status.get()
+            repeatable = bool(self.action_repeatable.get())
+            rule = action.setdefault("使用规则", {})
+            rule["原值"] = "repeatable" if repeatable else "once_per_player_per_location"
+            rule["是否可重复"] = repeatable
+            rule["依据"] = self.action_usage_evidence.get().strip()
             event = action.get("对应地图事件")
             if event is not None:
                 event["标题"] = self.action_title.get()
