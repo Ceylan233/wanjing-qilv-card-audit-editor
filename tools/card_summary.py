@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SUMMARY_SCHEMA_VERSION = 4
+SUMMARY_SCHEMA_VERSION = 8
 AUTO_REVIEW_AUTHORITY_PREFIXES = ("fresh_ocr_and_visual_",)
 SKIRM_CARD_NAMES = {
     1517: "电路·面具",
@@ -28,6 +28,7 @@ SKIRM_CARD_NAMES = {
 }
 VERIFIED_CARD_TITLES = {
     987: "逆转沙漏",
+    1357: "飞溅，骑士",
     1385: "水诅咒",
     1386: "木诅咒",
     1387: "风诅咒",
@@ -72,6 +73,8 @@ def card_kind(card: dict[str, Any]) -> str:
     card_id = int(card.get("编号", 0) or 0)
     if card_id in SKIRM_CARD_NAMES:
         return "交锋卡"
+    if compact_text(card.get("基础信息", {}).get("素材分类")) == "大卡":
+        return "大卡"
     if bool(card.get("地图", {}).get("是否地点牌", False)):
         return "大卡"
     return "小卡"
@@ -109,7 +112,10 @@ def _cost_text(cost: Any) -> str:
 def _ability_lines(abilities: Iterable[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for ability in abilities:
-        text = clipped(ability.get("text_zh"), 260)
+        # The audit summary is also the human acceptance checklist.  Do not
+        # truncate a long ability: costs, conditions or the final option are
+        # all meaningful printed elements.
+        text = compact_text(ability.get("text_zh"))
         label = compact_text(ability.get("label_zh")) or "卡牌能力"
         cost = _cost_text(ability.get("cost"))
         status = compact_text(ability.get("execution_status"))
@@ -136,9 +142,17 @@ def _review_guidance(
         ability for ability in abilities
         if compact_text(ability.get("source_authority")).startswith(AUTO_REVIEW_AUTHORITY_PREFIXES)
     ]
+    reocr_review = card.get("二次OCR盘查", {})
     if review_status == "已核验":
         priority = "已核验"
         reason = "该卡已被人工标记为核验完成；再次修改结构化数据后仍应复查总结。"
+    elif reocr_review.get("状态") == "需人工核验":
+        priority = "优先"
+        review_reasons = [compact_text(value) for value in reocr_review.get("原因", []) if compact_text(value)]
+        reason = "二次OCR与运行结构交叉检查仍发现问题：" + ("；".join(review_reasons) if review_reasons else "需要对照最终中文卡图判断。")
+    elif reocr_review.get("状态") == "机器复核通过":
+        priority = "常规"
+        reason = "已重新OCR卡牌上下区域并通过运行结构交叉检查；机器复核不等于人工已核验，仍需完成常规人工验收。"
     elif auto_abilities:
         priority = "优先"
         reason = f"{len(auto_abilities)}项运行能力主要由OCR与牌面视觉检测生成，建议对照最终中文卡图逐项确认。"
@@ -160,7 +174,7 @@ def _review_guidance(
         ]
     else:
         checkpoints = [
-            "卡牌类型、价值、放置强化与强化容量",
+            "卡牌类型、价格、放置强化与强化储备数（灰色方格）",
             "每个骰槽的颜色/技能、指定结果、强化花费/生成及闪电标志",
             "技能的发动时机、条件、花费、收益、目标卡号及储备/替换顺序",
         ]
@@ -186,7 +200,17 @@ def _slot_line(slot: dict[str, Any], index: int) -> str:
     skill = compact_text(slot.get("技能类型", {}).get("中文"))
     result = compact_text(slot.get("挑战骰结果要求", {}).get("中文"))
     slot_type = compact_text(slot.get("槽位类型", {}).get("中文")) or "骰槽"
-    if skill and skill not in {"未识别", "未分类/不适用"}:
+    ability_text = compact_text(slot.get("能力文字"))
+    terrain = compact_text(slot.get("挑战骰地形", {}).get("中文"))
+    action_specific = compact_text(slot.get("特定行动"))
+    valid_skill = (
+        skill
+        and skill not in {"未识别", "未分类/不适用"}
+        and not skill.startswith("未知技能")
+    )
+    if ability_text:
+        identity = f"{color if color and color != '无/未识别' else ''}“{ability_text}”能力"
+    elif valid_skill:
         identity = skill
     elif color and color != "无/未识别":
         identity = f"{color}{family or '技能'}"
@@ -213,6 +237,10 @@ def _slot_line(slot: dict[str, Any], index: int) -> str:
         parts.append("仅限" + "、".join(paired_requirements) + "行动")
     elif requirements:
         parts.append("需要" + "、".join(requirements))
+    if terrain and terrain != "未指定/未识别":
+        parts.append(f"限定{terrain}")
+    if action_specific:
+        parts.append(f"特定行动：{action_specific}")
     cost = int(slot.get("挑战骰强化花费", 0) or 0)
     reward = int(slot.get("挑战骰强化生成", 0) or 0)
     if cost:
@@ -222,12 +250,17 @@ def _slot_line(slot: dict[str, Any], index: int) -> str:
     modifier = int(slot.get("额外投骰数量", 0) or 0)
     if modifier:
         parts.append(f"额外投{modifier}颗骰")
+    if bool(slot.get("挑战骰闪电标志")):
+        parts.append("带闪电/影响标志")
     return "；".join(parts) + "。"
 
 
 def _effect_text(effect: Any) -> str:
     if not isinstance(effect, dict):
-        return clipped(effect, 100)
+        return compact_text(effect)
+    printed_text = compact_text(effect.get("text_zh"))
+    if printed_text:
+        return printed_text.rstrip("。")
     command = compact_text(effect.get("command") or effect.get("命令"))
     labels = {
         "gain_card": "获得卡牌",
@@ -243,7 +276,9 @@ def _effect_text(effect: Any) -> str:
     for key in ("card_id", "destination_card_id", "stat", "amount", "skill", "kind", "maximum"):
         if key in effect:
             args.append(f"{key}={effect[key]}")
-    label = labels.get(command, command or "效果")
+    if not command:
+        return json.dumps(effect, ensure_ascii=False, sort_keys=True)
+    label = labels.get(command, command)
     return f"{label}（{'，'.join(args)}）" if args else label
 
 
@@ -254,7 +289,7 @@ def _action_line(action: dict[str, Any]) -> str:
     cost = event.get("花费")
     if cost is None:
         cost = action.get("花费")
-    result = clipped(event.get("结果文本"), 170)
+    result = compact_text(event.get("结果文本"))
     effects = [_effect_text(effect) for effect in event.get("结构化效果", [])]
     details = []
     if family:
@@ -264,7 +299,7 @@ def _action_line(action: dict[str, Any]) -> str:
     if result:
         details.append(result)
     elif effects:
-        details.append("、".join(effects[:3]))
+        details.append("、".join(effects))
     return (f"{label}" + ("：" + "；".join(details) if details else "")).rstrip("。；;") + "。"
 
 
@@ -299,7 +334,7 @@ def _useful_card_text(card: dict[str, Any]) -> str:
             continue
         if line not in lines:
             lines.append(line)
-    return clipped(" ".join(lines), 320)
+    return " ".join(lines)
 
 
 def build_card_summary(
@@ -332,9 +367,7 @@ def build_card_summary(
             elements.append(f"包含{len(arrivals)}项抵达强制事件。")
         actions = [*map_data.get("地点行动", []), *map_data.get("图画内地点行动", [])]
         if actions:
-            functions.extend(_action_line(action) for action in actions[:8])
-            if len(actions) > 8:
-                functions.append(f"另有{len(actions) - 8}项地点行动，详见结构化数据。")
+            functions.extend(_action_line(action) for action in actions)
     elif kind == "交锋卡":
         speed_match = re.search(r"(?m)^\s*(\d{1,2})\s*$", str(card.get("基础文本描述", {}).get("当前中文描述") or ""))
         if speed_match:
@@ -346,24 +379,58 @@ def build_card_summary(
         subtype = compact_text(small.get("小卡类型", {}).get("中文"))
         if subtype and subtype != "未分类/不适用":
             elements.append(f"类型：{subtype}。")
-        value = small.get("价值", {}).get("当前值")
+        printed_markers = [
+            compact_text(value)
+            for value in small.get("牌面类型标记", base.get("牌面类型标记", []))
+            if compact_text(value)
+        ]
+        if printed_markers:
+            elements.append("牌面类型标记：" + "、".join(dict.fromkeys(printed_markers)) + "。")
+        value = small.get("价格", {}).get("当前值")
+        if value is None:
+            value = small.get("价值", {}).get("当前值")
         if value is None:
             value = base.get("价值", {}).get("当前值")
         if value is not None:
-            elements.append(f"价值：{value}。")
+            elements.append(f"价格：{value}。")
         slots = card.get("挑战骰", {}).get("槽位", [])
         elements.extend(_slot_line(slot, index) for index, slot in enumerate(slots, 1))
-        capacity = small.get("强化容量", {}).get("当前值")
-        if capacity is not None:
-            elements.append(f"强化容量：{capacity}格。")
+        capacity = small.get("强化储备数（灰色方格）", {}).get("当前值")
+        if capacity is None:
+            capacity = small.get("强化容量", {}).get("当前值")
+        if capacity:
+            elements.append(f"强化储备数：{capacity}格灰色方格。")
         initial = small.get("放置时强化点数", {}).get("当前值")
         if initial:
             elements.append(f"放置时获得{initial}点强化。")
+        actions = list(small.get("行动", []))
+        if actions:
+            functions.extend(_action_line(action) for action in actions)
         functions.extend(_ability_lines(abilities))
+        for effect in small.get("放置效果", []):
+            text = _effect_text(effect)
+            if text:
+                line = f"放置效果：{text}。"
+                if line not in functions:
+                    functions.append(line)
         for value in small.get("人工可读放置效果修订", []):
-            text = clipped(value, 240)
+            text = compact_text(value)
             if text and text not in functions:
                 functions.append(text)
+
+    marker_slots = card.get("卡面标记槽", {})
+    marker_count = int(marker_slots.get("数量", 0) or 0)
+    if marker_count:
+        marker_kind = compact_text(marker_slots.get("类型")) or "任务标记"
+        elements.append(f"{marker_kind}槽：{marker_count}格（独立标记槽，不是骰槽或强化槽）。")
+    printed_skills = card.get("卡面技能标记", {}).get("标记", [])
+    if printed_skills:
+        labels = [
+            f"{compact_text(item.get('label_zh'))}（{compact_text(item.get('color_zh'))}）"
+            for item in printed_skills if isinstance(item, dict) and compact_text(item.get("label_zh"))
+        ]
+        if labels:
+            elements.append("卡面技能标记：" + "、".join(labels) + "（不是骰槽或地点行动）。")
 
     if not elements:
         elements.append("当前结构化数据尚未识别出稳定的牌面组件。")

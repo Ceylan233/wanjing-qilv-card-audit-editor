@@ -97,11 +97,13 @@ CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
 DEFAULT_IMAGE_ROTATIONS = {
     **{str(number).zfill(4): 180 for number in range(1092, 1105)},
+    **{str(number).zfill(4): 90 for number in range(1265, 1294)},
     "1138": 180,
     "1139": 180,
     "1146": 180,
+    "1150": 90,
 }
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.31"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.36"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -464,6 +466,9 @@ class VisualAuditEditor(tk.Tk):
         self.review_filter = tk.StringVar(value="全部")
         self.overlay_var = tk.BooleanVar(value=True)
         self.slot_edit_var = tk.BooleanVar(value=False)
+        # 简洁模式只改变可见内容，不删除或改写任何底层字段。
+        self.simple_mode_var = tk.BooleanVar(value=True)
+        self.tab_pages: dict[str, tk.Widget] = {}
         self.slot_drag: dict[str, Any] | None = None
         self.undo_stack: list[tuple[str, dict[str, Any]]] = []
         self.redo_stack: list[tuple[str, dict[str, Any]]] = []
@@ -561,6 +566,7 @@ class VisualAuditEditor(tk.Tk):
         view_menu.add_command(label="大图预览 / 返回校对布局", command=self.toggle_image_focus)
         view_menu.add_checkbutton(label="显示槽位框", variable=self.overlay_var, command=self.refresh_image)
         view_menu.add_checkbutton(label="显示调整手柄", variable=self.slot_edit_var, command=self.refresh_image)
+        view_menu.add_checkbutton(label="简洁人工核验模式", variable=self.simple_mode_var, command=self.apply_display_mode)
         view_menu.add_separator()
         view_menu.add_command(label="图片缩小", command=lambda: self.change_zoom(0.85))
         view_menu.add_command(label="适应窗口", command=self.reset_zoom)
@@ -801,7 +807,12 @@ class VisualAuditEditor(tk.Tk):
         type_box = ttk.Combobox(frame, textvariable=self.type_filter, values=["全部", "大卡", "小卡", "交锋卡"], state="readonly")
         type_box.grid(row=2, column=0, sticky="ew", pady=3)
         type_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
-        review_box = ttk.Combobox(frame, textvariable=self.review_filter, values=["全部", "AI建议优先", "待AI", "AI已处理", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"], state="readonly")
+        review_box = ttk.Combobox(
+            frame,
+            textvariable=self.review_filter,
+            values=["全部", "待人工核验", "有未解决骰槽", "有人工修订", "AI建议优先", "待AI", "AI已处理", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"],
+            state="readonly",
+        )
         review_box.grid(row=3, column=0, sticky="ew", pady=3)
         review_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
         list_wrap = ttk.Frame(frame)
@@ -813,6 +824,8 @@ class VisualAuditEditor(tk.Tk):
         sb.grid(row=0, column=1, sticky="ns")
         self.card_list.configure(yscrollcommand=sb.set)
         self.card_list.bind("<<ListboxSelect>>", self.on_card_select)
+        self.queue_count_var = tk.StringVar(value="正在统计核验队列…")
+        ttk.Label(frame, textvariable=self.queue_count_var, foreground="#38556b", wraplength=215, justify="left").grid(row=5, column=0, sticky="ew", pady=(5, 0))
 
     def _build_image_panel(self) -> None:
         frame = ttk.Frame(self, padding=(3, 0, 3, 6))
@@ -847,6 +860,7 @@ class VisualAuditEditor(tk.Tk):
         frame.columnconfigure(0, weight=1)
         self.tabs = ttk.Notebook(frame)
         self.tabs.grid(row=0, column=0, sticky="nsew")
+        self._build_checklist_tab()
         self._build_basic_tab()
         self._build_map_tab()
         self._build_actions_tab()
@@ -854,6 +868,65 @@ class VisualAuditEditor(tk.Tk):
         self._build_small_tab()
         self._build_review_tab()
         self._build_advanced_tab()
+        self.apply_display_mode()
+
+    def _build_checklist_tab(self) -> None:
+        tab = self._scroll_tab("人工核验清单")
+        ttk.Label(
+            tab,
+            text="只需要对照左侧卡图核对本页列出的内容。坐标、置信度、来源UID等机器字段默认隐藏，但仍完整保存在文件中。",
+            foreground="#174f2a",
+            wraplength=520,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(2, 8))
+        self.checklist_status_var = tk.StringVar(value="请选择卡牌")
+        ttk.Label(tab, textvariable=self.checklist_status_var, font=("Microsoft YaHei UI", 10, "bold"), foreground="#8a3f00", wraplength=520, justify="left").grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 5))
+        self.checklist_text = tk.Text(tab, width=44, height=29, wrap="word", bg="#f4faf5", padx=8, pady=8)
+        self.checklist_text.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
+        self.checklist_text.configure(state="disabled")
+        buttons = ttk.Frame(tab)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", padx=6, pady=8)
+        ttk.Button(buttons, text="骰槽/框位有错", command=lambda: self.open_editor_tab("挑战骰槽")).pack(side="left", padx=3)
+        ttk.Button(buttons, text="写纠正提示", command=self.focus_ai_correction).pack(side="left", padx=3)
+        ttk.Button(buttons, text="这张卡已核对无误", command=self.mark_verified).pack(side="left", padx=3)
+
+    def apply_display_mode(self) -> None:
+        """默认只露出当前卡型需要核对的页面；完整数据从不被删除。"""
+        if not hasattr(self, "tabs"):
+            return
+        simple = bool(self.simple_mode_var.get())
+        card = self.by_number.get(self.current_number or "", {})
+        visible = {"人工核验清单", "基础资料", "总结与AI纠正"}
+        if card:
+            is_location = bool(card.get("地图", {}).get("是否地点牌", False))
+            if is_location:
+                visible.update({"地图与罗盘", "事件与行动"})
+            else:
+                # 小卡即使当前识别为0个骰槽，也必须能进入该页补回漏槽。
+                visible.update({"挑战骰槽", "小卡/强化/技能"})
+                map_data = card.get("地图", {})
+                if any(map_data.get(key) for key in ("地点行动", "图画内地点行动")):
+                    visible.add("事件与行动")
+        for title, page in self.tab_pages.items():
+            state = "normal" if (not simple or title in visible) else "hidden"
+            try:
+                self.tabs.tab(page, state=state)
+            except tk.TclError:
+                pass
+        if hasattr(self, "slot_tree"):
+            self.slot_tree.column("confidence", width=0 if simple else 65, minwidth=0, stretch=not simple)
+
+    def open_editor_tab(self, title: str) -> None:
+        page = self.tab_pages.get(title)
+        if page is None:
+            return
+        self.tabs.tab(page, state="normal")
+        self.tabs.select(page)
+
+    def focus_ai_correction(self) -> None:
+        self.open_editor_tab("总结与AI纠正")
+        self.review_ai_prompt.focus_set()
+        self.review_ai_prompt.see("end")
 
     def _build_status_bar(self, parent: tk.Misc) -> ttk.Frame:
         bar = ttk.Frame(parent, padding=(6, 4))
@@ -878,6 +951,7 @@ class VisualAuditEditor(tk.Tk):
     def _scroll_tab(self, title: str) -> ttk.Frame:
         outer = ttk.Frame(self.tabs)
         self.tabs.add(outer, text=title)
+        self.tab_pages[title] = outer
         outer.rowconfigure(0, weight=0)
         outer.rowconfigure(1, weight=1)
         outer.columnconfigure(0, weight=1)
@@ -908,7 +982,7 @@ class VisualAuditEditor(tk.Tk):
         add_entry(tab, 2, "小卡类型", self.base_subtype, readonly=True)
         add_entry(tab, 3, "小卡识别名称", self.base_detected_name, readonly=True)
         self.base_name_entry = add_entry(tab, 4, "小卡人工校对名称", self.base_name)
-        self.base_value_combo = add_combo(tab, 5, "价值", self.base_value, NUMBER_CHOICES)
+        self.base_value_combo = add_combo(tab, 5, "价格（彩色数字标记）", self.base_value, NUMBER_CHOICES)
         add_entry(tab, 6, "贴图路径", self.base_texture, readonly=True)
         ttk.Label(tab, text="识别到的基础文本").grid(row=7, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 3))
         self.base_detected_text = tk.Text(tab, width=44, height=12, wrap="word", bg="#f0f0f0")
@@ -956,6 +1030,7 @@ class VisualAuditEditor(tk.Tk):
     def _build_actions_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
         self.tabs.add(tab, text="事件与行动")
+        self.tab_pages["事件与行动"] = tab
         tab.rowconfigure(1, weight=1)
         tab.rowconfigure(3, weight=2)
         tab.columnconfigure(0, weight=1)
@@ -1021,6 +1096,7 @@ class VisualAuditEditor(tk.Tk):
     def _build_slots_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
         self.tabs.add(tab, text="挑战骰槽")
+        self.tab_pages["挑战骰槽"] = tab
         tab.rowconfigure(2, weight=1)
         tab.columnconfigure(0, weight=1)
         slot_toolbar = ttk.Frame(tab)
@@ -1095,11 +1171,11 @@ class VisualAuditEditor(tk.Tk):
         self.small_initial = tk.StringVar()
         self.small_capacity = tk.StringVar()
         self.small_type_combo = add_combo(tab, 0, "小卡类型", self.small_type, SMALL_TYPES)
-        add_combo(tab, 1, "储备容量", self.small_reserve, NUMBER_CHOICES)
-        add_combo(tab, 2, "价值", self.small_value, NUMBER_CHOICES)
+        add_combo(tab, 1, "文字规则储备上限（通常不适用）", self.small_reserve, NUMBER_CHOICES)
+        add_combo(tab, 2, "价格（彩色数字标记）", self.small_value, NUMBER_CHOICES)
         add_combo(tab, 3, "放置时强化点数", self.small_initial, NUMBER_CHOICES)
-        add_combo(tab, 4, "强化容量", self.small_capacity, NUMBER_CHOICES)
-        boost_box = ttk.LabelFrame(tab, text="强化点数槽（黄色框）", padding=6)
+        add_combo(tab, 4, "强化储备数（灰色方格）", self.small_capacity, NUMBER_CHOICES)
+        boost_box = ttk.LabelFrame(tab, text="强化储备格（卡面灰色方格；图中黄色框）", padding=6)
         boost_box.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 2))
         boost_box.columnconfigure(0, weight=1)
         self.boost_tree = ttk.Treeview(boost_box, columns=("index", "bbox"), show="headings", height=5)
@@ -1165,6 +1241,7 @@ class VisualAuditEditor(tk.Tk):
     def _build_advanced_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
         self.tabs.add(tab, text="高级原始JSON")
+        self.tab_pages["高级原始JSON"] = tab
         tab.rowconfigure(1, weight=1)
         tab.columnconfigure(0, weight=1)
         ttk.Label(tab, text="普通校对无需使用本页；仅处理表单无法覆盖的罕见结构。", foreground="#9b4d00").grid(row=0, column=0, sticky="w")
@@ -1451,9 +1528,28 @@ class VisualAuditEditor(tk.Tk):
 
     def populate_list(self, numbers: list[str] | None = None) -> None:
         self.card_list.delete(0, tk.END)
-        for number in numbers or [str(card.get("编号")) for card in self.cards]:
+        source_numbers = numbers if numbers is not None else [str(card.get("编号")) for card in self.cards]
+        for number in source_numbers:
             card = self.by_number[number]
             self.card_list.insert(tk.END, self.card_list_text(card))
+        unresolved_cards = sum(self.has_unresolved_slot(card) for card in self.cards)
+        unverified_cards = sum(card.get("人工校对", {}).get("总状态", "未校对") != "已核验" for card in self.cards)
+        self.queue_count_var.set(f"当前显示 {len(source_numbers)} / {len(self.cards)}\n待人工核验 {unverified_cards}｜骰槽待查 {unresolved_cards}")
+
+    def has_unresolved_slot(self, card: dict[str, Any]) -> bool:
+        return any(bool(slot.get("未解决问题")) for slot in card.get("挑战骰", {}).get("槽位", []))
+
+    def has_manual_revision(self, card: dict[str, Any]) -> bool:
+        review = card.get("人工校对", {})
+        if review.get("修订状态") == "已修订":
+            return True
+        fields = (
+            "名字修订", "基础文本修订", "地图事件修订", "地图元素修订", "罗盘道路修订",
+            "地点行动修订", "图画内地点行动修订", "挑战骰修订", "小卡行动修订", "强化修订",
+            "技能效果修订", "技能花销修订", "小卡类型修订", "储备容量修订", "价值修订",
+            "放置时强化点数修订", "强化容量修订", "问题列表", "备注",
+        )
+        return any(review.get(field) not in (None, "", [], {}) for field in fields)
 
     def card_list_text(self, card: dict[str, Any]) -> str:
         number = str(card.get("编号"))
@@ -1463,6 +1559,8 @@ class VisualAuditEditor(tk.Tk):
         review = card.get("人工校对", {})
         if card.get("牌面总结", {}).get("人工核验优先级") == "优先":
             marker += "【AI建议优先】"
+        if self.has_unresolved_slot(card):
+            marker += "【骰槽待查】"
         if str(review.get("待AI处理提示词") or "").strip():
             marker += "【AI已处理】" if review.get("AI处理状态") == "已完成" else "【待AI】"
         if kind == "大卡":
@@ -1539,6 +1637,12 @@ class VisualAuditEditor(tk.Tk):
             if wanted_type != "全部" and display_kind != wanted_type:
                 continue
             display_state = self.revision_display_state(card)
+            if wanted_review == "待人工核验" and review == "已核验":
+                continue
+            if wanted_review == "有未解决骰槽" and not self.has_unresolved_slot(card):
+                continue
+            if wanted_review == "有人工修订" and not self.has_manual_revision(card):
+                continue
             if wanted_review == "AI建议优先" and summary_priority != "优先":
                 continue
             if wanted_review == "待AI" and (not ai_prompt or ai_status == "已完成"):
@@ -1553,7 +1657,7 @@ class VisualAuditEditor(tk.Tk):
                 continue
             if wanted_review == "未修订" and display_state:
                 continue
-            if wanted_review not in ("全部", "AI建议优先", "待AI", "AI已处理", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
+            if wanted_review not in ("全部", "待人工核验", "有未解决骰槽", "有人工修订", "AI建议优先", "待AI", "AI已处理", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
                 continue
             result.append(number)
         self.populate_list(result)
@@ -1615,19 +1719,22 @@ class VisualAuditEditor(tk.Tk):
         self.populate_slots(card)
         small = card.get("小卡", {})
         self.small_type.set(small.get("小卡类型", {}).get("中文", "") or "未分类/不适用")
-        self.small_reserve.set("" if small.get("储备容量", {}).get("当前值") is None else str(small["储备容量"]["当前值"]))
-        self.small_value.set("" if small.get("价值", {}).get("当前值") is None else str(small["价值"]["当前值"]))
+        reserve_field = small.get("文字规则中的储备容量", small.get("储备容量", {}))
+        self.small_reserve.set("" if reserve_field.get("当前值") is None else str(reserve_field["当前值"]))
+        price_field = small.get("价格", small.get("价值", {}))
+        self.small_value.set("" if price_field.get("当前值") is None else str(price_field["当前值"]))
         self.small_initial.set("" if small.get("放置时强化点数", {}).get("当前值") is None else str(small["放置时强化点数"]["当前值"]))
-        self.small_capacity.set(str(small.get("强化容量", {}).get("当前值", 0)))
+        capacity_field = small.get("强化储备数（灰色方格）", small.get("强化容量", {}))
+        self.small_capacity.set(str(capacity_field.get("当前值", 0)))
         self.populate_boost_slots(card)
         text_set(self.small_placement, self.readable_lines(small.get("放置效果", [])))
         effects = small.get("技能效果", {})
         skill_lines = list(effects.get("中文卡面冒号文本候选", []))
         for ability in effects.get("结构化卡牌能力", []):
-            skill_lines.append(f"{ability.get('label_zh', '能力')}｜发动:{ability.get('activation')}｜花费:{ability.get('cost')}｜选项:{ability.get('options')}")
+            skill_lines.append(self.human_ability_line(ability))
         text_set(self.small_skills, "\n".join(skill_lines))
         costs = small.get("技能花销", {})
-        cost_lines = [f"能力花销：{item}" for item in costs.get("卡牌能力花销", [])]
+        cost_lines = [f"能力花费：{self.human_cost(item)}" for item in costs.get("卡牌能力花销", [])]
         cost_lines += [f"{item.get('行动文字')}｜条目{item.get('故事条目')}｜花费{item.get('花费')}" for item in costs.get("行动故事花费", [])]
         text_set(self.small_costs, "\n".join(cost_lines))
         review = card.get("人工校对", {})
@@ -1642,14 +1749,83 @@ class VisualAuditEditor(tk.Tk):
         self.review_ai_status.set(
             f"AI处理状态：{ai_status}｜{review.get('AI处理结果摘要', '')}" if ai_status else "未填写提示词"
         )
+        unresolved_slots = sum(bool(slot.get("未解决问题")) for slot in card.get("挑战骰", {}).get("槽位", []))
+        if review.get("总状态") == "已核验":
+            checklist_status = "状态：已核验。若结构化数据后来发生变化，请再次对照卡图。"
+        elif unresolved_slots:
+            checklist_status = f"状态：待人工核验；其中 {unresolved_slots} 个骰槽有机器未解决项，请优先检查。"
+        else:
+            checklist_status = "状态：待人工核验。按下方顺序逐项看卡图即可。"
+        self.checklist_status_var.set(checklist_status)
+        self.checklist_text.configure(state="normal")
+        text_set(self.checklist_text, self.human_checklist_text(card))
+        self.checklist_text.configure(state="disabled")
         self.refresh_advanced()
         self.image_zoom = 1.0
         default_rotation = DEFAULT_IMAGE_ROTATIONS.get(str(card.get("编号") or "").zfill(4), 0)
         self.image_rotation = int(card.get("人工校对", {}).get("图片显示旋转度数", default_rotation) or 0) % 360
         self.refresh_image()
+        self.apply_display_mode()
         self.loading = False
         self.user_modified_current = False
         self.status_var.set(f"{number}｜骰槽 {card.get('挑战骰', {}).get('槽位总数', 0)}｜{self.review_status.get()}")
+
+    def human_checklist_text(self, card: dict[str, Any]) -> str:
+        summary = str(card.get("牌面总结", {}).get("内容") or "").strip()
+        visible_summary = summary.split("\n人工核验：", 1)[0].strip()
+        instructions = [
+            "【建议核对顺序】",
+            "1. 卡号、名称、主类型和卡面上的每个子标签。",
+            "2. 价格（彩色数字标记）、强化储备数（灰色方格）、放置强化，以及所有卡面文字。",
+            "3. 每个完整留白方框才算骰槽；核对框位、颜色/结果、花费、生成和闪电标志。",
+            "4. 主动技能、被动技能、圆形效果和彩色行动条不是骰槽，但它们的文字效果仍必须保留。",
+            "5. 行动、选项、条件、页码、失去/替换卡牌等句子都属于有效规则，不能省略。",
+            "",
+            "【当前结构化内容】",
+            visible_summary or "当前没有生成可读总结，请在“总结与AI纠正”页记录问题。",
+        ]
+        markers = card.get("卡面标记槽", {})
+        marker_count = int(markers.get("数量", 0) or 0)
+        if marker_count:
+            instructions.extend([
+                "",
+                "【独立卡面标记槽】",
+                f"- {markers.get('类型') or '任务标记'}：{marker_count}格。紫色框显示；它们不是挑战骰槽或强化槽。",
+            ])
+        printed_skills = card.get("卡面技能标记", {}).get("标记", [])
+        if printed_skills:
+            labels = "、".join(
+                f"{item.get('label_zh')}（{item.get('color_zh')}）"
+                for item in printed_skills if isinstance(item, dict)
+            )
+            instructions.extend([
+                "",
+                "【卡面技能图示】",
+                f"- {labels}。这些图示必须保留，但不是骰槽，也不直接作为地点故事行动。",
+            ])
+        unresolved = [slot for slot in card.get("挑战骰", {}).get("槽位", []) if slot.get("未解决问题")]
+        if unresolved:
+            instructions.extend([
+                "",
+                "【需要优先看的地方】",
+                f"- 系统仍不确定 {len(unresolved)} 个骰槽。请直接看左侧卡图，确认是否真有完整方框以及框是否贴合边界。",
+            ])
+        prompt = str(card.get("人工校对", {}).get("待AI处理提示词") or "").strip()
+        if prompt:
+            instructions.extend(["", "【已记录的纠正】", prompt])
+        slot_revisions = card.get("人工校对", {}).get("挑战骰修订", [])
+        if slot_revisions:
+            instructions.extend([
+                "",
+                "【骰槽人工最终结论】",
+                "下列删除表示误识别骰槽必须保持删除；位置调整表示人工确认后的最终框位。",
+            ])
+            for item in slot_revisions:
+                if isinstance(item, dict):
+                    operation = str(item.get("操作") or "修订")
+                    detail = str(item.get("说明") or "").strip()
+                    instructions.append(f"- {operation}：{detail}" if detail else f"- {operation}")
+        return "\n".join(instructions)
 
     def readable_lines(self, values: Any) -> str:
         if not values:
@@ -1657,12 +1833,74 @@ class VisualAuditEditor(tk.Tk):
         lines = []
         for value in values if isinstance(values, list) else [values]:
             if isinstance(value, dict):
-                command = value.get("command") or value.get("命令") or "效果"
-                args = "，".join(f"{k}={v}" for k, v in value.items() if k not in ("command", "命令"))
-                lines.append(f"{command}：{args}")
+                direct_text = str(value.get("text_zh") or value.get("中文") or value.get("text") or "").strip()
+                if direct_text:
+                    lines.append(direct_text)
+                    continue
+                command = str(value.get("command") or value.get("命令") or "效果")
+                command_names = {
+                    "choose": "选择一项",
+                    "adjust_stat": "调整属性",
+                    "gain_skill": "获得技能",
+                    "lose_skill": "失去技能",
+                    "adjust_card_reinforcement": "调整卡牌强化",
+                    "set_card_reinforcement": "设置卡牌强化",
+                    "gain_card": "获得卡牌",
+                    "lose_card": "失去卡牌",
+                    "replace_card": "替换卡牌",
+                    "reroll_challenge_dice": "重掷挑战骰",
+                    "continue_action": "继续/取得另一个行动结果",
+                    "inspect_world_book_page": "查看《万境之书》页码",
+                    "add_hazard_damage_shield": "抵消环境伤害",
+                }
+                field_names = {
+                    "amount": "数量", "stat": "属性", "skill": "技能", "card_id": "卡牌",
+                    "page": "页码", "hazard_type": "伤害类型", "scope": "范围", "cost_reduction": "费用减少",
+                }
+                useful = []
+                for key, item in value.items():
+                    if key in ("command", "命令", "source", "source_uid", "event_uid", "action_uid", "confidence"):
+                        continue
+                    if key == "options" and isinstance(item, list):
+                        option_labels = [str(option.get("label") or option.get("text_zh") or option.get("text") or f"选项{index + 1}") for index, option in enumerate(item) if isinstance(option, dict)]
+                        if option_labels:
+                            useful.append("；".join(option_labels))
+                        continue
+                    if isinstance(item, (dict, list)):
+                        continue
+                    useful.append(f"{field_names.get(key, key)}：{item}")
+                label = command_names.get(command, "规则效果")
+                lines.append(f"{label}：{'，'.join(useful)}" if useful else label)
             else:
                 lines.append(str(value))
         return "\n".join(lines)
+
+    def human_cost(self, value: Any) -> str:
+        if not isinstance(value, dict):
+            return str(value)
+        labels = {
+            "card_reinforcement": "本卡强化",
+            "challenge_dice": "挑战骰",
+            "boost": "公共强化",
+            "time": "时间",
+            "health": "生命",
+            "morale": "士气",
+            "coins": "金钱",
+        }
+        parts = [f"{labels.get(str(key), str(key))}{amount}" for key, amount in value.items() if amount not in (None, 0, "")]
+        return "、".join(parts) if parts else "无"
+
+    def human_ability_line(self, ability: dict[str, Any]) -> str:
+        label = str(ability.get("label_zh") or "能力").strip()
+        text = str(ability.get("text_zh") or "").strip()
+        activation = {
+            "manual": "主动技能", "action": "卡面行动", "passive": "被动技能",
+            "triggered": "触发技能", "reactive": "反应技能", "skirm_only": "交锋技能",
+        }.get(str(ability.get("activation") or ""), "技能")
+        heading = f"{label}（{activation}；花费：{self.human_cost(ability.get('cost', {}))}）"
+        if not text or text == label:
+            return heading
+        return f"{heading}：{text}"
 
     def make_manual_action(self, card: dict[str, Any], section: str, index: int) -> dict[str, Any]:
         number = str(card.get("编号"))
@@ -2057,7 +2295,11 @@ class VisualAuditEditor(tk.Tk):
         card = self.by_number[self.current_number]
         self.push_undo(self.current_number, card)
         removed = card["挑战骰"]["槽位"].pop(self.current_slot_index)
-        self.log_slot_change(card, "删除", f"删除 {removed.get('槽位UID')}")
+        self.log_slot_change(
+            card,
+            "删除误识别骰槽",
+            f"{removed.get('槽位UID')} 不是可放骰子的完整方框；以人工结论为准，最终数据中保持删除",
+        )
         self.reindex_challenge_slots(card)
         self.current_slot_index = None
         self.dirty = True
@@ -2110,6 +2352,11 @@ class VisualAuditEditor(tk.Tk):
         small = card["小卡"]
         small["强化容量"]["当前值"] = capacity
         small["强化容量"]["视觉检测值"] = capacity
+        reserve = small.setdefault("强化储备数（灰色方格）", {})
+        reserve["当前值"] = capacity
+        reserve["视觉检测值"] = capacity
+        reserve["槽位坐标"] = deepcopy(boxes)
+        reserve["说明"] = "卡面每个灰色方格可储备1点强化。"
         small.setdefault("强化", {})["强化容量"] = capacity
         raw_card = card.setdefault("原始结构化卡牌数据", {})
         components = raw_card.setdefault("components", {})
@@ -2280,15 +2527,21 @@ class VisualAuditEditor(tk.Tk):
         small_type_zh = self.small_type.get().strip() or "未分类/不适用"
         small.setdefault("小卡类型", {}).update({"中文": small_type_zh, "原值": SMALL_TYPE_CODES.get(small_type_zh, "")})
         card.setdefault("基础信息", {}).setdefault("小卡类型", {}).update({"中文": small_type_zh, "原值": SMALL_TYPE_CODES.get(small_type_zh, "")})
-        small.setdefault("储备容量", {})["当前值"] = parse_int(self.small_reserve.get())
+        reserve_value = parse_int(self.small_reserve.get())
+        small.setdefault("文字规则中的储备容量", {})["当前值"] = reserve_value
+        small.setdefault("储备容量", {})["当前值"] = reserve_value
         small_value = parse_int(self.small_value.get())
+        small.setdefault("价格", {})["当前值"] = small_value
         small.setdefault("价值", {})["当前值"] = small_value
         if small.get("是否小卡"):
             unified_value = small_value if small_value is not None else value
+            small["价格"]["当前值"] = unified_value
             small["价值"]["当前值"] = unified_value
             card["基础信息"]["价值"]["当前值"] = unified_value
         small.setdefault("放置时强化点数", {})["当前值"] = parse_int(self.small_initial.get())
-        small.setdefault("强化容量", {})["当前值"] = parse_int(self.small_capacity.get()) or 0
+        capacity_value = parse_int(self.small_capacity.get()) or 0
+        small.setdefault("强化储备数（灰色方格）", {})["当前值"] = capacity_value
+        small.setdefault("强化容量", {})["当前值"] = capacity_value
         small.setdefault("强化", {})["放置时强化点数"] = small["放置时强化点数"]["当前值"]
         small["强化"]["强化容量"] = small["强化容量"]["当前值"]
         small["人工可读放置效果修订"] = [line.strip() for line in text_get(self.small_placement).splitlines() if line.strip()]
@@ -2449,6 +2702,13 @@ class VisualAuditEditor(tk.Tk):
                         handle = max(18, min(image.width, image.height) // 100)
                         for hx, hy in ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3])):
                             draw.rectangle((hx - handle, hy - handle, hx + handle, hy + handle), fill="#ffeb3b", outline="#231f20", width=4)
+            marker_kind = str(card.get("卡面标记槽", {}).get("类型") or "标")
+            for i, bbox in enumerate(card.get("卡面标记槽", {}).get("槽位坐标", [])):
+                if len(bbox) == 4:
+                    box = tuple(int(v) for v in bbox)
+                    color = "#b388ff"
+                    draw.rectangle(box, outline=color, width=8)
+                    draw.text((box[0] + 8, box[1] + 8), f"{marker_kind[:1]}{i + 1}", fill=color)
         rotated = annotated.rotate(-self.image_rotation, expand=True)
         cw, ch = max(200, self.canvas.winfo_width() - 20), max(200, self.canvas.winfo_height() - 20)
         fit = min(cw / rotated.width, ch / rotated.height)
@@ -2721,7 +2981,7 @@ Remove-Item -LiteralPath {ps_quote(str(legacy_launcher_path))} -Force -ErrorActi
             return
         if hit_kind == "challenge":
             self.current_boost_index = None
-            self.tabs.select(3)
+            self.open_editor_tab("挑战骰槽")
             self.slot_tree.selection_set(str(hit_index))
             self.slot_tree.focus(str(hit_index))
             self.slot_tree.see(str(hit_index))
@@ -2729,7 +2989,7 @@ Remove-Item -LiteralPath {ps_quote(str(legacy_launcher_path))} -Force -ErrorActi
             bbox = list(slots[hit_index].get("坐标_原图像素"))
         else:
             self.current_slot_index = None
-            self.tabs.select(4)
+            self.open_editor_tab("小卡/强化/技能")
             self.boost_tree.selection_set(str(hit_index))
             self.boost_tree.focus(str(hit_index))
             self.boost_tree.see(str(hit_index))
@@ -2800,6 +3060,13 @@ Remove-Item -LiteralPath {ps_quote(str(legacy_launcher_path))} -Force -ErrorActi
             card = self.by_number[self.current_number]
             if self.slot_drag.get("kind") == "boost":
                 selected = int(self.slot_drag["index"])
+                boxes = card.get("小卡", {}).get("强化容量", {}).get("槽位坐标", [])
+                if self.slot_drag.get("undo_pushed") and selected < len(boxes):
+                    self.log_boost_change(
+                        card,
+                        "人工调整位置",
+                        f"强化槽 {selected + 1} 最终位置：{boxes[selected]}",
+                    )
                 self.populate_boost_slots(card)
                 if selected < len(card.get("小卡", {}).get("强化容量", {}).get("槽位坐标", [])):
                     self.current_boost_index = selected
@@ -2807,6 +3074,14 @@ Remove-Item -LiteralPath {ps_quote(str(legacy_launcher_path))} -Force -ErrorActi
                     self.on_boost_select()
             else:
                 selected = int(self.slot_drag["index"])
+                slots = card.get("挑战骰", {}).get("槽位", [])
+                if self.slot_drag.get("undo_pushed") and selected < len(slots):
+                    slot = slots[selected]
+                    self.log_slot_change(
+                        card,
+                        "人工调整位置",
+                        f"{slot.get('槽位UID')} 最终位置：{slot.get('坐标_原图像素')}",
+                    )
                 self.populate_slots(card)
                 if selected < len(card.get("挑战骰", {}).get("槽位", [])):
                     self.current_slot_index = None
