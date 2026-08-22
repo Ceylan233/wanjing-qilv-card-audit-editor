@@ -30,6 +30,14 @@ except ImportError:  # 源码环境未安装时仍尝试使用系统证书
 
 from PIL import Image, ImageDraw, ImageTk
 
+from card_summary import (
+    SUMMARY_SCHEMA_VERSION,
+    build_card_summary,
+    card_kind,
+    ensure_card_summary,
+    load_ability_index,
+)
+
 
 def find_project() -> Path:
     start = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
@@ -86,7 +94,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.23"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.24"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -352,7 +360,12 @@ def ask_remote_settings(parent: tk.Misc, current_url: str = "", use_saved_code: 
 
 
 class VisualAuditEditor(tk.Tk):
-    def __init__(self, path: Path, remote_sync: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        path: Path,
+        remote_sync: dict[str, Any] | None = None,
+        test_mode: bool = False,
+    ):
         super().__init__()
         self.title(f"万境奇旅｜卡牌可视化人工校对器 v{EDITOR_VERSION}")
         screen_width = self.winfo_screenwidth()
@@ -366,6 +379,11 @@ class VisualAuditEditor(tk.Tk):
         self.document: dict[str, Any] = {}
         self.cards: list[dict[str, Any]] = []
         self.by_number: dict[str, dict[str, Any]] = {}
+        try:
+            self.abilities_by_card = load_ability_index(PROJECT / "data/rules/zh_cn/card_abilities.json")
+        except Exception:
+            self.abilities_by_card = {}
+        self.summary_migration_count = 0
         self.current_number: str | None = None
         self.current_action_ref: tuple[str, int] | None = None
         self.current_slot_index: int | None = None
@@ -385,6 +403,7 @@ class VisualAuditEditor(tk.Tk):
         self.loading = False
         self.document_load_generation = 0
         self.document_ready = False
+        self.test_mode = test_mode
         self.user_modified_current = False
         self.pending_revision_numbers: set[str] = set()
         self.status_var = tk.StringVar(value="正在加载…")
@@ -398,11 +417,17 @@ class VisualAuditEditor(tk.Tk):
         self.redo_stack: list[tuple[str, dict[str, Any]]] = []
         self.slot_clipboard: dict[str, Any] | None = None
         self._build()
-        self.after(30, lambda: self.load_document_async(path, remote_sync))
-        if remote_sync and not remote_sync.get("document_url"):
-            self.after(80, self.load_remote)
-        self.after_idle(self.maximize_window)
-        self.after(1800, lambda: self.check_for_updates(silent=True))
+        if test_mode:
+            document = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
+                raise ValueError("文件缺少“卡牌”数组")
+            self.apply_document_data(path, document, remote_sync, synchronous=True)
+        else:
+            self.after(30, lambda: self.load_document_async(path, remote_sync))
+            if remote_sync and not remote_sync.get("document_url"):
+                self.after(80, self.load_remote)
+            self.after_idle(self.maximize_window)
+            self.after(1800, lambda: self.check_for_updates(silent=True))
 
     def _build(self) -> None:
         self.rowconfigure(1, weight=1)
@@ -449,7 +474,8 @@ class VisualAuditEditor(tk.Tk):
         file_menu.add_command(label="打开校对文件…", accelerator="Ctrl+O", command=self.open_document)
         file_menu.add_command(label="保存到磁盘", accelerator="Ctrl+S", command=self.save_all)
         file_menu.add_separator()
-        file_menu.add_command(label="导出待AI卡片…", command=self.export_ai_prompt_cards)
+        file_menu.add_command(label="导出待AI校对任务包…", command=self.export_ai_prompt_cards)
+        file_menu.add_command(label="导出全部牌面总结…", command=self.export_all_card_summaries)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.on_close)
         menu_bar.add_cascade(label="文件", menu=file_menu)
@@ -720,10 +746,10 @@ class VisualAuditEditor(tk.Tk):
         search = ttk.Entry(frame, textvariable=self.search_var, width=24)
         search.grid(row=1, column=0, sticky="ew", pady=3)
         search.bind("<KeyRelease>", lambda _e: self.filter_cards())
-        type_box = ttk.Combobox(frame, textvariable=self.type_filter, values=["全部", "地点牌", "标准小卡/补给卡"], state="readonly")
+        type_box = ttk.Combobox(frame, textvariable=self.type_filter, values=["全部", "大卡", "小卡", "交锋卡"], state="readonly")
         type_box.grid(row=2, column=0, sticky="ew", pady=3)
         type_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
-        review_box = ttk.Combobox(frame, textvariable=self.review_filter, values=["全部", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"], state="readonly")
+        review_box = ttk.Combobox(frame, textvariable=self.review_filter, values=["全部", "待AI", "AI已处理", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"], state="readonly")
         review_box.grid(row=3, column=0, sticky="ew", pady=3)
         review_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
         list_wrap = ttk.Frame(frame)
@@ -1041,21 +1067,38 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(tab, text="应用小卡/强化修改", command=self.commit_current).grid(row=12, column=1, sticky="e", padx=6, pady=8)
 
     def _build_review_tab(self) -> None:
-        tab = self._scroll_tab("校对结论")
+        tab = self._scroll_tab("总结与AI纠正")
         self.review_status = tk.StringVar(value="未校对")
         ttk.Label(tab, text="总校对状态").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         ttk.Combobox(tab, textvariable=self.review_status, values=["未校对", "校对中", "已核验", "有问题"], state="readonly").grid(row=0, column=1, sticky="ew", padx=6, pady=4)
-        ttk.Label(tab, text="问题列表（每行一项）").grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.review_issues = tk.Text(tab, width=44, height=14, wrap="word")
-        self.review_issues.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
-        ttk.Label(tab, text="校对备注").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
-        self.review_notes = tk.Text(tab, width=44, height=14, wrap="word")
-        self.review_notes.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
-        ttk.Label(tab, text="待AI处理提示词（不知道如何填写或修改时写在这里）", foreground="#8a3f00").grid(row=5, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
+        ttk.Label(tab, text="牌面总结（覆盖全部大卡、小卡与交锋卡）", foreground="#24527a").grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
+        self.review_summary = tk.Text(tab, width=44, height=20, wrap="word", bg="#edf5fb")
+        self.review_summary.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
+        self.review_summary.configure(state="disabled")
+        summary_buttons = ttk.Frame(tab)
+        summary_buttons.grid(row=3, column=0, columnspan=2, sticky="e", padx=6, pady=5)
+        ttk.Button(summary_buttons, text="按当前数据重新生成", command=self.regenerate_current_summary).pack(side="left", padx=4)
+        ttk.Button(summary_buttons, text="导出全部总结", command=self.export_all_card_summaries).pack(side="left", padx=4)
+        ttk.Label(tab, text="问题列表（每行一项）").grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
+        self.review_issues = tk.Text(tab, width=44, height=9, wrap="word")
+        self.review_issues.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        ttk.Label(tab, text="校对备注").grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
+        self.review_notes = tk.Text(tab, width=44, height=8, wrap="word")
+        self.review_notes.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6)
+        ttk.Label(
+            tab,
+            text="纠正提示词（直接写事实纠正；例如：时间结果是红色不是橙色。图示表示花费2点强化后可以获得一个蓝色标记。）",
+            foreground="#8a3f00",
+            wraplength=520,
+            justify="left",
+        ).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(8, 2))
         self.review_ai_prompt = tk.Text(tab, width=44, height=10, wrap="word", bg="#fff8dc")
-        self.review_ai_prompt.grid(row=6, column=0, columnspan=2, sticky="ew", padx=6)
+        self.review_ai_prompt.grid(row=9, column=0, columnspan=2, sticky="ew", padx=6)
+        self.review_ai_status = tk.StringVar(value="未填写提示词")
+        ttk.Label(tab, textvariable=self.review_ai_status, foreground="#6b4b00").grid(row=10, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 0))
         buttons = ttk.Frame(tab)
-        buttons.grid(row=7, column=0, columnspan=2, sticky="e", padx=6, pady=8)
+        buttons.grid(row=11, column=0, columnspan=2, sticky="e", padx=6, pady=8)
+        ttk.Button(buttons, text="导出待AI任务包", command=self.export_ai_prompt_cards).pack(side="left", padx=4)
         ttk.Button(buttons, text="标记为未修订", command=self.mark_current_unrevised).pack(side="left", padx=4)
         ttk.Button(buttons, text="标记为已核验", command=self.mark_verified).pack(side="left", padx=4)
         ttk.Button(buttons, text="应用校对结论", command=self.commit_current).pack(side="left", padx=4)
@@ -1098,30 +1141,46 @@ class VisualAuditEditor(tk.Tk):
         document: dict[str, Any],
         remote_sync: dict[str, Any] | None = None,
         generation: int | None = None,
+        synchronous: bool = False,
     ) -> None:
         if generation is not None and generation != self.document_load_generation:
             return
         self.document = document
         self.cards = self.document.get("卡牌", [])
+        self.summary_migration_count = 0
+        for card in self.cards:
+            card_id = int(card.get("编号", 0) or 0)
+            if ensure_card_summary(card, self.abilities_by_card.get(card_id, [])):
+                self.summary_migration_count += 1
+        if self.summary_migration_count:
+            self.document.setdefault("字段说明", {})["牌面总结"] = "面向人工校对的自动摘要；发现错误时在人工校对.待AI处理提示词中写明纠正。"
+            self.dirty = True
         self.by_number = {str(card.get("编号")): card for card in self.cards}
         self.path = path
         self.remote_sync = remote_sync
         self.pending_revision_numbers.clear()
         # 先把窗口交还给 Tk，避免 111MB 文档的索引和首张大图缩放阻塞首屏。
         self.status_var.set(f"已读取 {len(self.cards)} 张卡，正在建立索引…")
-        self.after_idle(lambda: self.finish_document_load(generation))
+        if synchronous:
+            self.finish_document_load(generation, synchronous=True)
+        else:
+            self.after_idle(lambda: self.finish_document_load(generation))
 
-    def finish_document_load(self, generation: int | None = None) -> None:
+    def finish_document_load(self, generation: int | None = None, synchronous: bool = False) -> None:
         if generation is not None and generation != self.document_load_generation:
             return
         self.refresh_choice_catalogs()
         self.populate_list()
         self.document_ready = True
-        self.status_var.set(f"已加载 {len(self.cards)} 张卡｜表单校对模式")
+        migration = f"｜已补全{self.summary_migration_count}份牌面总结，保存后写入" if self.summary_migration_count else ""
+        self.status_var.set(f"已加载 {len(self.cards)} 张卡｜表单校对模式{migration}")
         if self.cards:
             self.card_list.selection_set(0)
             # 首张卡图再延后一帧，确保列表和窗口先显示出来。
-            self.after_idle(self.on_card_select)
+            if synchronous:
+                self.on_card_select()
+            else:
+                self.after_idle(self.on_card_select)
 
     def load_document(self, path: Path, remote_sync: dict[str, Any] | None = None) -> None:
         """同步接口仅供已在后台读取完成的旧调用；普通打开使用异步版本。"""
@@ -1339,14 +1398,17 @@ class VisualAuditEditor(tk.Tk):
 
     def card_list_text(self, card: dict[str, Any]) -> str:
         number = str(card.get("编号"))
+        kind = card_kind(card)
         state = self.revision_display_state(card)
         marker = f"【{state}】" if state else ""
-        if str(card.get("人工校对", {}).get("待AI处理提示词") or "").strip():
-            marker += "【待AI】"
-        is_location = card.get("地图", {}).get("是否地点牌", False)
-        name = "" if is_location else (card.get("名字", {}).get("人工修订值") or card.get("名字", {}).get("当前中文名") or "未命名")
-        suffix = "" if is_location else f" {name[:15]}"
-        return f"{number} {marker}{suffix}"
+        review = card.get("人工校对", {})
+        if str(review.get("待AI处理提示词") or "").strip():
+            marker += "【AI已处理】" if review.get("AI处理状态") == "已完成" else "【待AI】"
+        if kind == "大卡":
+            name = "大卡"
+        else:
+            name = card.get("牌面总结", {}).get("标题") or card.get("名字", {}).get("人工修订值") or card.get("名字", {}).get("当前中文名") or "未命名"
+        return f"{number} {marker} {str(name)[:15]}"
 
     def refresh_card_list_entry(self, number: str) -> None:
         """立即重绘当前卡牌状态，不重置列表选择。"""
@@ -1404,15 +1466,21 @@ class VisualAuditEditor(tk.Tk):
             is_location = card.get("地图", {}).get("是否地点牌", False)
             name = "" if is_location else (card.get("名字", {}).get("人工修订值") or card.get("名字", {}).get("当前中文名") or "")
             desc = card.get("基础文本描述", {}).get("人工修订值") or card.get("基础文本描述", {}).get("当前中文描述") or ""
-            card_type = card.get("基础信息", {}).get("卡牌类型", {}).get("中文")
+            display_kind = card_kind(card)
             review_data = card.get("人工校对", {})
             review = review_data.get("总状态", "未校对")
             ai_prompt = str(review_data.get("待AI处理提示词") or "").strip()
-            if query and query not in (number + name + desc + ai_prompt).lower():
+            summary = str(card.get("牌面总结", {}).get("内容") or "")
+            ai_status = str(review_data.get("AI处理状态") or "")
+            if query and query not in (number + name + desc + summary + ai_prompt).lower():
                 continue
-            if wanted_type != "全部" and card_type != wanted_type:
+            if wanted_type != "全部" and display_kind != wanted_type:
                 continue
             display_state = self.revision_display_state(card)
+            if wanted_review == "待AI" and (not ai_prompt or ai_status == "已完成"):
+                continue
+            if wanted_review == "AI已处理" and ai_status != "已完成":
+                continue
             if wanted_review == "有提示词" and not ai_prompt:
                 continue
             if wanted_review == "已修订未保存" and display_state != "已修订未保存":
@@ -1421,7 +1489,7 @@ class VisualAuditEditor(tk.Tk):
                 continue
             if wanted_review == "未修订" and display_state:
                 continue
-            if wanted_review not in ("全部", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
+            if wanted_review not in ("全部", "待AI", "AI已处理", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
                 continue
             result.append(number)
         self.populate_list(result)
@@ -1440,8 +1508,11 @@ class VisualAuditEditor(tk.Tk):
         self.loading = True
         number = str(card.get("编号"))
         is_location = card.get("地图", {}).get("是否地点牌", False)
+        display_kind = card_kind(card)
         small_name = card.get("名字", {}).get("人工修订值") or card.get("名字", {}).get("当前中文名") or "未命名"
-        self.image_title.configure(text=f"地点牌 {number}" if is_location else f"小卡 {number}｜{small_name}")
+        summary_title = card.get("牌面总结", {}).get("标题") or small_name
+        image_heading = f"{display_kind} {number}" if display_kind == "大卡" else f"{display_kind} {number}｜{summary_title}"
+        self.image_title.configure(text=image_heading)
         self.base_number.set(number)
         self.base_type.set(card.get("基础信息", {}).get("卡牌类型", {}).get("中文", ""))
         self.base_subtype.set(card.get("基础信息", {}).get("小卡类型", {}).get("中文", ""))
@@ -1497,9 +1568,16 @@ class VisualAuditEditor(tk.Tk):
         text_set(self.small_costs, "\n".join(cost_lines))
         review = card.get("人工校对", {})
         self.review_status.set(review.get("总状态", "未校对"))
+        self.review_summary.configure(state="normal")
+        text_set(self.review_summary, card.get("牌面总结", {}).get("内容", ""))
+        self.review_summary.configure(state="disabled")
         text_set(self.review_issues, "\n".join(review.get("问题列表", [])))
         text_set(self.review_notes, review.get("备注", ""))
         text_set(self.review_ai_prompt, review.get("待AI处理提示词", ""))
+        ai_status = str(review.get("AI处理状态") or "")
+        self.review_ai_status.set(
+            f"AI处理状态：{ai_status}｜{review.get('AI处理结果摘要', '')}" if ai_status else "未填写提示词"
+        )
         self.refresh_advanced()
         self.image_zoom = 1.0
         self.image_rotation = int(card.get("人工校对", {}).get("图片显示旋转度数", 0) or 0) % 360
@@ -2155,13 +2233,32 @@ class VisualAuditEditor(tk.Tk):
         review["总状态"] = self.review_status.get()
         review["问题列表"] = [line.strip() for line in text_get(self.review_issues).splitlines() if line.strip()]
         review["备注"] = text_get(self.review_notes).strip()
+        previous_prompt = str(review.get("待AI处理提示词") or "").strip()
         ai_prompt = text_get(self.review_ai_prompt).strip()
         if ai_prompt:
             review["待AI处理提示词"] = ai_prompt
-            review["AI处理状态"] = "待处理"
+            if ai_prompt != previous_prompt or not review.get("AI处理状态"):
+                review["AI处理状态"] = "待处理"
+                review["提示词最后修改时间"] = datetime.now().astimezone().isoformat(timespec="seconds")
+                review.pop("AI处理结果摘要", None)
+                review.pop("AI处理完成时间", None)
         else:
             review.pop("待AI处理提示词", None)
             review.pop("AI处理状态", None)
+            review.pop("提示词最后修改时间", None)
+            review.pop("AI处理结果摘要", None)
+            review.pop("AI处理完成时间", None)
+        card["牌面总结"] = build_card_summary(
+            card,
+            self.abilities_by_card.get(int(card.get("编号", 0) or 0), []),
+        )
+        self.review_summary.configure(state="normal")
+        text_set(self.review_summary, card["牌面总结"]["内容"])
+        self.review_summary.configure(state="disabled")
+        ai_status = str(review.get("AI处理状态") or "")
+        self.review_ai_status.set(
+            f"AI处理状态：{ai_status}｜{review.get('AI处理结果摘要', '')}" if ai_status else "未填写提示词"
+        )
         after = json.dumps(card, ensure_ascii=False, sort_keys=True)
         if before != after:
             self.push_undo(self.current_number, before_card)
@@ -2172,6 +2269,24 @@ class VisualAuditEditor(tk.Tk):
             self.status_var.set(f"{self.current_number} 已修改，尚未写入磁盘")
         self.user_modified_current = False
         self.refresh_advanced()
+
+    def regenerate_current_summary(self) -> None:
+        if not self.current_number:
+            return
+        self.commit_current()
+        card = self.by_number[self.current_number]
+        before = deepcopy(card.get("牌面总结"))
+        card["牌面总结"] = build_card_summary(
+            card,
+            self.abilities_by_card.get(int(card.get("编号", 0) or 0), []),
+        )
+        self.review_summary.configure(state="normal")
+        text_set(self.review_summary, card["牌面总结"]["内容"])
+        self.review_summary.configure(state="disabled")
+        if before != card["牌面总结"]:
+            self.mark_card_revised(card)
+            self.dirty = True
+        self.status_var.set(f"卡牌 {self.current_number} 的牌面总结已按当前数据重新生成")
 
     def mark_verified(self) -> None:
         self.mark_review_status("已核验")
@@ -2677,19 +2792,20 @@ Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction Sile
         self.on_card_select()
 
     def export_ai_prompt_cards(self) -> None:
-        """导出包含提示词的完整卡牌对象，供后续集中交给 AI 处理。"""
+        """导出待处理提示词及完整卡牌对象，供后续集中校对并同步代码。"""
         self.commit_current()
         prompted_cards = [
             deepcopy(card)
             for card in self.cards
             if str(card.get("人工校对", {}).get("待AI处理提示词") or "").strip()
+            and str(card.get("人工校对", {}).get("AI处理状态") or "") != "已完成"
         ]
         if not prompted_cards:
-            messagebox.showinfo("导出待AI卡片", "当前没有填写待AI处理提示词的卡片。")
+            messagebox.showinfo("导出待AI任务包", "当前没有尚待处理的纠正提示词。")
             return
-        default_name = self.path.stem + ".待AI处理卡片.json"
+        default_name = self.path.stem + ".待AI校对任务包.json"
         target = filedialog.asksaveasfilename(
-            title="导出待AI处理卡片",
+            title="导出待AI校对任务包",
             initialdir=str(self.path.parent),
             initialfile=default_name,
             defaultextension=".json",
@@ -2698,7 +2814,15 @@ Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction Sile
         if not target:
             return
         payload = {
-            "用途": "仅包含填写了待AI处理提示词的卡片；AI应按照每张卡的人工校对.待AI处理提示词修改卡牌数据。",
+            "处理协议版本": 1,
+            "用途": "仅包含尚未完成的纠正提示词；AI须完成卡图人工校对并同步修改派生数据、运行代码和测试。",
+            "处理要求": [
+                "每张卡以人工校对.待AI处理提示词为最高优先级，并与最终中文卡图逐项核对。",
+                "纠正牌面总结以及所有重复保存的结构化卡牌字段，避免只改展示文字。",
+                "同步修改runtime_cards、card_abilities及其生成器或权威覆盖源，确保重新生成后不会回退。",
+                "涉及游戏规则时修改对应运行代码并添加或更新回归测试。",
+                "完成后将AI处理状态设为已完成，写入AI处理结果摘要、完成时间和修改目标；保留原提示词供追溯。",
+            ],
             "来源文件": str(self.path),
             "导出时间": datetime.now().astimezone().isoformat(timespec="seconds"),
             "待处理数量": len(prompted_cards),
@@ -2709,8 +2833,51 @@ Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction Sile
         except Exception as exc:
             messagebox.showerror("导出失败", str(exc))
             return
-        self.status_var.set(f"已导出 {len(prompted_cards)} 张待AI处理卡片：{Path(target).name}")
-        messagebox.showinfo("导出完成", f"已导出 {len(prompted_cards)} 张卡片。\n\n{target}")
+        self.status_var.set(f"已导出 {len(prompted_cards)} 张待AI校对卡片：{Path(target).name}")
+        messagebox.showinfo("导出完成", f"已导出 {len(prompted_cards)} 张待AI校对卡片。\n\n{target}")
+
+    def export_all_card_summaries(self) -> None:
+        """导出全部大卡、小卡与交锋卡的简明总结。"""
+        self.commit_current()
+        default_name = self.path.stem + ".全部牌面总结.json"
+        target = filedialog.asksaveasfilename(
+            title="导出全部牌面总结",
+            initialdir=str(self.path.parent),
+            initialfile=default_name,
+            defaultextension=".json",
+            filetypes=[("JSON", "*.json")],
+        )
+        if not target:
+            return
+        counts = {"大卡": 0, "小卡": 0, "交锋卡": 0}
+        cards = []
+        for card in self.cards:
+            kind = card_kind(card)
+            counts[kind] += 1
+            summary = card.get("牌面总结", {})
+            cards.append({
+                "编号": str(card.get("编号", "")).zfill(4),
+                "卡牌类别": kind,
+                "标题": summary.get("标题", ""),
+                "牌面总结": summary.get("内容", ""),
+                "中文源图片": card.get("基础信息", {}).get("中文源图片", ""),
+                "AI处理状态": card.get("人工校对", {}).get("AI处理状态", ""),
+            })
+        payload = {
+            "结构版本": SUMMARY_SCHEMA_VERSION,
+            "用途": "全部大卡、小卡、交锋卡的牌面元素与功能总结，供人工核对与提示词纠正。",
+            "导出时间": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "总数": len(cards),
+            "分类统计": counts,
+            "卡牌": cards,
+        }
+        try:
+            Path(target).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except Exception as exc:
+            messagebox.showerror("导出失败", str(exc))
+            return
+        self.status_var.set(f"已导出全部 {len(cards)} 份牌面总结：{Path(target).name}")
+        messagebox.showinfo("导出完成", f"已导出全部 {len(cards)} 份牌面总结。\n\n{target}")
 
     def save_all(self) -> None:
         self.commit_current()
@@ -2792,20 +2959,32 @@ def resume_pending_windows_update() -> bool:
 def self_test(path: Path) -> int:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     cards = data.get("卡牌", [])
-    required = {"编号", "名字", "基础信息", "地图", "挑战骰", "小卡", "人工校对"}
+    required = {"编号", "名字", "基础信息", "地图", "挑战骰", "小卡", "人工校对", "牌面总结"}
     if len(cards) != 1713 or cards[0].get("编号") != "0002" or cards[-1].get("编号") != "1714":
         return 3
     if any(not required.issubset(card) for card in cards):
         return 4
+    counts = {"大卡": 0, "小卡": 0, "交锋卡": 0}
+    for card in cards:
+        kind = card_kind(card)
+        counts[kind] += 1
+        summary = card.get("牌面总结", {})
+        if int(summary.get("结构版本", 0) or 0) < SUMMARY_SCHEMA_VERSION or not str(summary.get("内容") or "").strip():
+            return 5
+    if counts != {"大卡": 801, "小卡": 900, "交锋卡": 12}:
+        return 6
     return 0
 
 
 def ui_self_test(path: Path) -> int:
-    editor = VisualAuditEditor(path)
+    editor = VisualAuditEditor(path, test_mode=True)
     editor.update_idletasks()
     if editor.image_source is None:
         editor.destroy()
         return 5
+    if not str(editor.review_summary.get("1.0", "end-1c")).strip():
+        editor.destroy()
+        return 8
     editor.toggle_image_focus()
     editor.update_idletasks()
     if not editor.image_focus_mode:
