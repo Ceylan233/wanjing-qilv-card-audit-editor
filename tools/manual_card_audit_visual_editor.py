@@ -95,7 +95,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.25"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.26"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -110,6 +110,40 @@ REMOTE_CODE_FILE = REMOTE_CACHE_DIR / "security_code.txt"
 def version_numbers(value: str) -> tuple[int, ...]:
     numbers = tuple(int(part) for part in re.findall(r"\d+", value))
     return numbers or (0,)
+
+
+def windows_update_command(script_path: Path) -> list[str]:
+    """使用 Windows Unicode 命令行直接启动更新脚本，兼容中文安装路径。"""
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    powershell = Path(system_root) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    executable = str(powershell) if powershell.is_file() else "powershell.exe"
+    return [
+        executable,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-WindowStyle",
+        "Hidden",
+        "-File",
+        str(script_path),
+    ]
+
+
+def launch_windows_update_script(script_path: Path) -> None:
+    command = windows_update_command(script_path)
+    # DETACHED_PROCESS 会让 Windows PowerShell 5.1 返回成功却跳过 -File 脚本；
+    # CREATE_NO_WINDOW 已能隐藏窗口，独立进程组则允许编辑器安全退出。
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    options = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    try:
+        subprocess.Popen(command, creationflags=flags, **options)
+    except OSError:
+        subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, **options)
 
 
 def download_url(url: str, target: Path | None = None) -> bytes | None:
@@ -2556,7 +2590,7 @@ class VisualAuditEditor(tk.Tk):
             return "'" + value.replace("'", "''") + "'"
 
         script_path = target.with_name(f".{target.stem}.update.ps1")
-        launcher_path = target.with_name(f".{target.stem}.update.cmd")
+        legacy_launcher_path = target.with_name(f".{target.stem}.update.cmd")
         script = f"""$ErrorActionPreference = 'Continue'
 $target = {ps_quote(str(target))}
 $downloaded = {ps_quote(str(downloaded))}
@@ -2588,19 +2622,11 @@ if (-not $updated) {{
 Remove-Item -LiteralPath $downloaded -Force -ErrorAction SilentlyContinue
 Start-Process -FilePath $target -ArgumentList @($dataFile) -WorkingDirectory (Split-Path -Parent $target) -WindowStyle Hidden
 Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath {ps_quote(str(legacy_launcher_path))} -Force -ErrorAction SilentlyContinue
 """
         script_path.write_text(script, encoding="utf-8-sig")
-        launcher = f'''@echo off
-"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}"
-'''
-        launcher_path.write_text(launcher, encoding="ascii")
-        command = ["cmd.exe", "/d", "/c", "call", str(launcher_path)]
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-        try:
-            subprocess.Popen(command, creationflags=creation_flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-        except OSError:
-            subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+        launch_windows_update_script(script_path)
+
     def rotate_image(self, delta: int) -> None:
         if not self.current_number:
             return
@@ -2943,7 +2969,7 @@ def resume_pending_windows_update() -> bool:
     target = Path(sys.executable).resolve()
     downloaded = target.with_name(f".{target.name}.update")
     script_path = target.with_name(f".{target.stem}.update.ps1")
-    launcher_path = target.with_name(f".{target.stem}.update.cmd")
+    legacy_launcher_path = target.with_name(f".{target.stem}.update.cmd")
     if not downloaded.exists() or not script_path.exists():
         return False
     try:
@@ -2952,19 +2978,7 @@ def resume_pending_windows_update() -> bool:
             return False
     except OSError:
         return False
-    if not launcher_path.exists():
-        launcher_path.write_text(
-            f'''@echo off
-"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}"
-''',
-            encoding="ascii",
-        )
-    command = ["cmd.exe", "/d", "/c", "call", str(launcher_path)]
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-    try:
-        subprocess.Popen(command, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
-    except OSError:
-        subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    launch_windows_update_script(script_path)
     return True
 
 

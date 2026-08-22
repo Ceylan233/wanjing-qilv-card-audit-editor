@@ -14,6 +14,8 @@
 
 编辑器启动后会后台检查 GitHub Releases。发现新版本时，Windows 会在退出后替换 EXE，Steam Deck 会替换 AppImage；下载内容先通过 SHA256 校验。
 
+v0.3.26 修复 Windows 安装目录含中文时自动更新失败的问题：更新脚本现在通过 Unicode 命令行直接启动，不再生成 ASCII 编码的 CMD 启动器。从 v0.3.25 升级到该版本需要手动下载一次，之后可继续使用自动更新。
+
 ## 多设备远程校对
 
 编辑器支持从线上配置读取校对 JSON，并通过 HTTPS `PUT`/`POST` 上传同步。阿里云 OSS 建议使用对象读取 URL和上传预签名 URL，示例见 `tools/remote_card_audit_config.example.json`。配置文件中只放 URL 和参数，不要放 AccessKey/Secret；令牌可放在每台设备的环境变量 `CARD_AUDIT_SYNC_TOKEN`，也可保存到配置指定的本地 `token_file`。
