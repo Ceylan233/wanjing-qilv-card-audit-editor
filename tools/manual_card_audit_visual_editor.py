@@ -101,7 +101,7 @@ DEFAULT_IMAGE_ROTATIONS = {
     "1139": 180,
     "1146": 180,
 }
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.28"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.29"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -135,6 +135,16 @@ def windows_update_command(script_path: Path) -> list[str]:
     ]
 
 
+def independent_frozen_process_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Create a clean environment for a new frozen application instance."""
+    environment = dict(os.environ if source is None else source)
+    for key in list(environment):
+        if key.upper().startswith("_PYI_"):
+            environment.pop(key, None)
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return environment
+
+
 def launch_windows_update_script(script_path: Path) -> None:
     command = windows_update_command(script_path)
     # DETACHED_PROCESS 会让 Windows PowerShell 5.1 返回成功却跳过 -File 脚本；
@@ -145,6 +155,7 @@ def launch_windows_update_script(script_path: Path) -> None:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
+        "env": independent_frozen_process_environment(),
     }
     try:
         subprocess.Popen(command, creationflags=flags, **options)
@@ -2582,7 +2593,7 @@ class VisualAuditEditor(tk.Tk):
             os.replace(downloaded, target)
             self.status_var.set(f"AppImage 已更新到 {target.name}")
             if messagebox.askyesno("更新完成", "AppImage 已安全替换，JSON 和图片未改动。是否立即重启？"):
-                environment = os.environ.copy()
+                environment = independent_frozen_process_environment()
                 environment.pop("APPIMAGE", None)
                 environment["APPIMAGE_EXTRACT_AND_RUN"] = "1"
                 environment["CARD_AUDIT_APPIMAGE_PATH"] = str(target)
