@@ -19,7 +19,7 @@ VENV_DIR="$BUILD_DIR/venv"
 if [ ! -x "$VENV_DIR/bin/python" ]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
-"$VENV_DIR/bin/python" -m pip install --upgrade pip 'pyinstaller==6.22.0' pillow certifi
+"$VENV_DIR/bin/python" -m pip install --upgrade pip 'pyinstaller==6.22.2' pillow certifi
 "$VENV_DIR/bin/python" -m PyInstaller --noconfirm --clean --onefile --name manual-card-audit-editor-linux \
   --distpath "$BUILD_DIR/dist" \
   --workpath "$BUILD_DIR/work" \
