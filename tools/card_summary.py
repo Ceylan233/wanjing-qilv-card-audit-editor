@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SUMMARY_SCHEMA_VERSION = 2
+SUMMARY_SCHEMA_VERSION = 3
+AUTO_REVIEW_AUTHORITY_PREFIXES = ("fresh_ocr_and_visual_",)
 SKIRM_CARD_NAMES = {
     1517: "电路·面具",
     1518: "风·号角",
@@ -24,6 +25,22 @@ SKIRM_CARD_NAMES = {
     1526: "叶·披风",
     1527: "水·利刃",
     1528: "木·工具",
+}
+VERIFIED_CARD_TITLES = {
+    987: "逆转沙漏",
+    1385: "水诅咒",
+    1386: "木诅咒",
+    1387: "风诅咒",
+    1388: "叶诅咒",
+    1389: "石诅咒",
+    1390: "沙诅咒",
+    1391: "金属诅咒",
+    1392: "肌腱诅咒",
+    1393: "黄金诅咒",
+    1394: "火诅咒",
+    1395: "能量诅咒",
+    1396: "电路诅咒",
+    1707: "亲和之石",
 }
 GENERIC_NAMES = {
     "物品", "设备", "动物", "智慧生物", "智慧生物/NPC", "植物", "构筑物", "载具",
@@ -64,6 +81,8 @@ def card_title(card: dict[str, Any]) -> str:
     card_id = int(card.get("编号", 0) or 0)
     if card_id in SKIRM_CARD_NAMES:
         return SKIRM_CARD_NAMES[card_id]
+    if card_id in VERIFIED_CARD_TITLES:
+        return VERIFIED_CARD_TITLES[card_id]
     name = card.get("名字", {})
     revised = compact_text(name.get("人工修订值"))
     detected = compact_text(name.get("当前中文名"))
@@ -105,6 +124,60 @@ def _ability_lines(abilities: Iterable[dict[str, Any]]) -> list[str]:
         if line not in lines:
             lines.append(line)
     return lines
+
+
+def _review_guidance(
+    card: dict[str, Any],
+    kind: str,
+    abilities: list[dict[str, Any]],
+) -> dict[str, Any]:
+    review_status = compact_text(card.get("人工校对", {}).get("总状态")) or "未校对"
+    auto_abilities = [
+        ability for ability in abilities
+        if compact_text(ability.get("source_authority")).startswith(AUTO_REVIEW_AUTHORITY_PREFIXES)
+    ]
+    if review_status == "已核验":
+        priority = "已核验"
+        reason = "该卡已被人工标记为核验完成；再次修改结构化数据后仍应复查总结。"
+    elif auto_abilities:
+        priority = "优先"
+        reason = f"{len(auto_abilities)}项运行能力主要由OCR与牌面视觉检测生成，建议对照最终中文卡图逐项确认。"
+    else:
+        priority = "常规"
+        reason = "当前没有系统标记的高风险能力；仍需按最终中文卡图完成常规人工验收。"
+
+    if kind == "大卡":
+        checkpoints = [
+            "地形与地区标记",
+            "四向道路及移动花费",
+            "每项行动的技能颜色、名称、花费、条件、收益与去向",
+        ]
+    elif kind == "交锋卡":
+        checkpoints = [
+            "速度值",
+            "元素计分条件",
+            "一次骰子能力的目标、数量、重掷/刷新方式与结算时机",
+        ]
+    else:
+        checkpoints = [
+            "卡牌类型、价值、放置强化与强化容量",
+            "每个骰槽的颜色/技能、指定结果、强化花费/生成及闪电标志",
+            "技能的发动时机、条件、花费、收益、目标卡号及储备/替换顺序",
+        ]
+
+    authorities: list[str] = []
+    for ability in abilities:
+        authority = compact_text(ability.get("source_authority")) or "未标明来源"
+        if authority not in authorities:
+            authorities.append(authority)
+    return {
+        "优先级": priority,
+        "当前人工状态": review_status,
+        "原因": reason,
+        "核对重点": checkpoints,
+        "能力来源": authorities,
+        "OCR视觉生成能力数": len(auto_abilities),
+    }
 
 
 def _slot_line(slot: dict[str, Any], index: int) -> str:
@@ -222,6 +295,7 @@ def build_card_summary(
     card: dict[str, Any],
     abilities: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
+    abilities = list(abilities)
     number = str(card.get("编号", "")).zfill(4)
     kind = card_kind(card)
     title = card_title(card)
@@ -286,6 +360,8 @@ def build_card_summary(
         fallback = _useful_card_text(card)
         functions.append("牌面文字摘要：" + fallback if fallback else "当前尚无可靠的结构化功能描述。")
 
+    guidance = _review_guidance(card, kind, abilities)
+
     # 大卡没有“小卡式牌名”。地点名称的历史识别值仍留在原始字段中供
     # 溯源，但不能作为大卡标题显示或导出。
     display_title = "" if kind == "大卡" else title
@@ -297,6 +373,9 @@ def build_card_summary(
         *[f"- {line}" for line in elements],
         "功能：",
         *[f"- {line}" for line in functions],
+        "人工核验：",
+        f"- 优先级：{guidance['优先级']}。{guidance['原因']}",
+        "- 核对重点：" + "；".join(guidance["核对重点"]) + "。",
     ]
     return {
         "结构版本": SUMMARY_SCHEMA_VERSION,
@@ -304,6 +383,12 @@ def build_card_summary(
         "标题": display_title,
         "内容": "\n".join(content_lines),
         "生成来源": "卡牌结构化数据与已验证能力数据",
+        "人工核验优先级": guidance["优先级"],
+        "人工核验状态": guidance["当前人工状态"],
+        "人工核验原因": guidance["原因"],
+        "人工核验重点": guidance["核对重点"],
+        "能力来源": guidance["能力来源"],
+        "OCR视觉生成能力数": guidance["OCR视觉生成能力数"],
     }
 
 

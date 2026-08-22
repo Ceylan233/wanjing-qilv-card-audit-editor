@@ -16,6 +16,7 @@ import threading
 import tkinter as tk
 import urllib.request
 from urllib.error import HTTPError
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -94,7 +95,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.24"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.25"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -749,7 +750,7 @@ class VisualAuditEditor(tk.Tk):
         type_box = ttk.Combobox(frame, textvariable=self.type_filter, values=["全部", "大卡", "小卡", "交锋卡"], state="readonly")
         type_box.grid(row=2, column=0, sticky="ew", pady=3)
         type_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
-        review_box = ttk.Combobox(frame, textvariable=self.review_filter, values=["全部", "待AI", "AI已处理", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"], state="readonly")
+        review_box = ttk.Combobox(frame, textvariable=self.review_filter, values=["全部", "AI建议优先", "待AI", "AI已处理", "有提示词", "未修订", "已修订未保存", "已修订", "未校对", "校对中", "已核验", "有问题"], state="readonly")
         review_box.grid(row=3, column=0, sticky="ew", pady=3)
         review_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
         list_wrap = ttk.Frame(frame)
@@ -1402,6 +1403,8 @@ class VisualAuditEditor(tk.Tk):
         state = self.revision_display_state(card)
         marker = f"【{state}】" if state else ""
         review = card.get("人工校对", {})
+        if card.get("牌面总结", {}).get("人工核验优先级") == "优先":
+            marker += "【AI建议优先】"
         if str(review.get("待AI处理提示词") or "").strip():
             marker += "【AI已处理】" if review.get("AI处理状态") == "已完成" else "【待AI】"
         if kind == "大卡":
@@ -1471,12 +1474,15 @@ class VisualAuditEditor(tk.Tk):
             review = review_data.get("总状态", "未校对")
             ai_prompt = str(review_data.get("待AI处理提示词") or "").strip()
             summary = str(card.get("牌面总结", {}).get("内容") or "")
+            summary_priority = str(card.get("牌面总结", {}).get("人工核验优先级") or "")
             ai_status = str(review_data.get("AI处理状态") or "")
             if query and query not in (number + name + desc + summary + ai_prompt).lower():
                 continue
             if wanted_type != "全部" and display_kind != wanted_type:
                 continue
             display_state = self.revision_display_state(card)
+            if wanted_review == "AI建议优先" and summary_priority != "优先":
+                continue
             if wanted_review == "待AI" and (not ai_prompt or ai_status == "已完成"):
                 continue
             if wanted_review == "AI已处理" and ai_status != "已完成":
@@ -1489,7 +1495,7 @@ class VisualAuditEditor(tk.Tk):
                 continue
             if wanted_review == "未修订" and display_state:
                 continue
-            if wanted_review not in ("全部", "待AI", "AI已处理", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
+            if wanted_review not in ("全部", "AI建议优先", "待AI", "AI已处理", "有提示词", "已修订未保存", "已修订", "未修订") and review != wanted_review:
                 continue
             result.append(number)
         self.populate_list(result)
@@ -2860,6 +2866,11 @@ Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction Sile
                 "卡牌类别": kind,
                 "标题": summary.get("标题", ""),
                 "牌面总结": summary.get("内容", ""),
+                "人工核验优先级": summary.get("人工核验优先级", "常规"),
+                "人工核验状态": summary.get("人工核验状态", "未校对"),
+                "人工核验原因": summary.get("人工核验原因", ""),
+                "人工核验重点": summary.get("人工核验重点", []),
+                "能力来源": summary.get("能力来源", []),
                 "中文源图片": card.get("基础信息", {}).get("中文源图片", ""),
                 "AI处理状态": card.get("人工校对", {}).get("AI处理状态", ""),
             })
@@ -2869,6 +2880,7 @@ Remove-Item -LiteralPath {ps_quote(str(launcher_path))} -Force -ErrorAction Sile
             "导出时间": datetime.now().astimezone().isoformat(timespec="seconds"),
             "总数": len(cards),
             "分类统计": counts,
+            "人工核验优先级统计": dict(Counter(str(card.get("人工核验优先级", "常规")) for card in cards)),
             "卡牌": cards,
         }
         try:
