@@ -101,7 +101,7 @@ DEFAULT_IMAGE_ROTATIONS = {
     "1139": 180,
     "1146": 180,
 }
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.30"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.31"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -1021,7 +1021,7 @@ class VisualAuditEditor(tk.Tk):
     def _build_slots_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
         self.tabs.add(tab, text="挑战骰槽")
-        tab.rowconfigure(1, weight=1)
+        tab.rowconfigure(2, weight=1)
         tab.columnconfigure(0, weight=1)
         slot_toolbar = ttk.Frame(tab)
         slot_toolbar.grid(row=0, column=0, sticky="ew")
@@ -1029,14 +1029,21 @@ class VisualAuditEditor(tk.Tk):
         ttk.Button(slot_toolbar, text="新增骰槽", command=self.add_challenge_slot).pack(side="right", padx=2)
         ttk.Button(slot_toolbar, text="复制骰槽", command=self.duplicate_challenge_slot).pack(side="right", padx=2)
         ttk.Button(slot_toolbar, text="删除所选骰槽", command=self.delete_challenge_slot).pack(side="right", padx=2)
+        ttk.Label(
+            tab,
+            text="判定规则：只有完整留白方框才是骰槽；主动/被动技能文字块、圆形效果和彩色行动列表都不是骰槽。",
+            foreground="#8a3b00",
+            wraplength=860,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(5, 1))
         self.slot_tree = ttk.Treeview(tab, columns=("index", "type", "skill", "result", "ability", "cost", "gain", "impact", "confidence"), show="headings", height=12)
         for col, label, width in [("index", "序号", 42), ("type", "槽位类型", 120), ("skill", "技能", 80), ("result", "结果", 70), ("ability", "能力要求", 110), ("cost", "花费", 45), ("gain", "生成", 45), ("impact", "闪电", 45), ("confidence", "置信度", 65)]:
             self.slot_tree.heading(col, text=label)
             self.slot_tree.column(col, width=width, anchor="center")
-        self.slot_tree.grid(row=1, column=0, sticky="nsew", pady=4)
+        self.slot_tree.grid(row=2, column=0, sticky="nsew", pady=4)
         self.slot_tree.bind("<<TreeviewSelect>>", self.on_slot_select)
         form = ttk.LabelFrame(tab, text="所选骰槽", padding=7)
-        form.grid(row=2, column=0, sticky="ew")
+        form.grid(row=3, column=0, sticky="ew")
         for col in (1, 3, 5):
             form.columnconfigure(col, weight=1)
         self.slot_type = tk.StringVar()
