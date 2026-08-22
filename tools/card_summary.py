@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-SUMMARY_SCHEMA_VERSION = 3
+SUMMARY_SCHEMA_VERSION = 4
 AUTO_REVIEW_AUTHORITY_PREFIXES = ("fresh_ocr_and_visual_",)
 SKIRM_CARD_NAMES = {
     1517: "电路·面具",
@@ -200,7 +200,18 @@ def _slot_line(slot: dict[str, Any], index: int) -> str:
         for item in slot.get("挑战骰能力要求", [])
     ]
     requirements = [item for item in requirements if item]
-    if requirements:
+    ability_labels = [
+        compact_text(item)
+        for item in re.split(r"[|｜]", compact_text(slot.get("能力文字")))
+        if compact_text(item)
+    ]
+    if requirements and len(ability_labels) == len(requirements):
+        paired_requirements = [
+            f"{requirement}的“{label}”"
+            for requirement, label in zip(requirements, ability_labels)
+        ]
+        parts.append("仅限" + "、".join(paired_requirements) + "行动")
+    elif requirements:
         parts.append("需要" + "、".join(requirements))
     cost = int(slot.get("挑战骰强化花费", 0) or 0)
     reward = int(slot.get("挑战骰强化生成", 0) or 0)
