@@ -95,7 +95,7 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.26"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.27"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -1876,21 +1876,21 @@ class VisualAuditEditor(tk.Tk):
         return [round((width - size) / 2, 2), round((height - size) / 2, 2), round((width + size) / 2, 2), round((height + size) / 2, 2)]
 
     def fixed_challenge_bbox(self, bbox: list[float] | None = None) -> list[float]:
-        """保持中心点，只使用卡牌0803的334×327标准挑战骰槽尺寸。"""
+        """保留已有框的左上角，使用卡牌0803的334×327标准骰槽尺寸。"""
         if self.image_source is not None:
             image_width, image_height = self.image_source.size
         else:
             image_width, image_height = 1370, 2055
         if bbox and len(bbox) == 4:
-            center_x = (float(bbox[0]) + float(bbox[2])) / 2.0
-            center_y = (float(bbox[1]) + float(bbox[3])) / 2.0
+            anchor_x = float(bbox[0])
+            anchor_y = float(bbox[1])
         else:
-            center_x = image_width / 2.0
-            center_y = image_height / 2.0
+            anchor_x = (image_width - CHALLENGE_SLOT_WIDTH) / 2.0
+            anchor_y = (image_height - CHALLENGE_SLOT_HEIGHT) / 2.0
         slot_width = min(CHALLENGE_SLOT_WIDTH, float(image_width))
         slot_height = min(CHALLENGE_SLOT_HEIGHT, float(image_height))
-        x1 = max(0.0, min(center_x - slot_width / 2.0, image_width - slot_width))
-        y1 = max(0.0, min(center_y - slot_height / 2.0, image_height - slot_height))
+        x1 = max(0.0, min(anchor_x, image_width - slot_width))
+        y1 = max(0.0, min(anchor_y, image_height - slot_height))
         x1 = round(x1, 2)
         y1 = round(y1, 2)
         return [x1, y1, round(x1 + slot_width, 2), round(y1 + slot_height, 2)]
