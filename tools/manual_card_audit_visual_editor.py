@@ -95,7 +95,13 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.27"), flags=re.IGNORECASE)
+DEFAULT_IMAGE_ROTATIONS = {
+    **{str(number).zfill(4): 180 for number in range(1092, 1105)},
+    "1138": 180,
+    "1139": 180,
+    "1146": 180,
+}
+EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.28"), flags=re.IGNORECASE)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"
@@ -1620,7 +1626,8 @@ class VisualAuditEditor(tk.Tk):
         )
         self.refresh_advanced()
         self.image_zoom = 1.0
-        self.image_rotation = int(card.get("人工校对", {}).get("图片显示旋转度数", 0) or 0) % 360
+        default_rotation = DEFAULT_IMAGE_ROTATIONS.get(str(card.get("编号") or "").zfill(4), 0)
+        self.image_rotation = int(card.get("人工校对", {}).get("图片显示旋转度数", default_rotation) or 0) % 360
         self.refresh_image()
         self.loading = False
         self.user_modified_current = False
