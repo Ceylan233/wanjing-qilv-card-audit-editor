@@ -521,6 +521,7 @@ class CardPromptEditor(tk.Tk):
 
     def populate_list(self) -> None:
         selected = self.current_number
+        previous_view = self.card_list.yview() if self.card_list.size() else (0.0, 1.0)
         self.visible_card_numbers = self.visible_numbers()
         self.card_list.delete(0, tk.END)
         for number in self.visible_card_numbers:
@@ -528,7 +529,10 @@ class CardPromptEditor(tk.Tk):
         if selected in self.visible_card_numbers:
             index = self.visible_card_numbers.index(selected)
             self.card_list.selection_set(index)
-            self.card_list.see(index)
+            self.card_list.yview_moveto(previous_view[0])
+            first, last = self.card_list.yview()
+            if not first <= index / max(1, self.card_list.size()) <= last:
+                self.card_list.see(index)
 
     def on_select(self, _event=None) -> None:
         selected = self.card_list.curselection()
@@ -548,7 +552,6 @@ class CardPromptEditor(tk.Tk):
         self.current_status.set(f"卡牌 {number}｜{prompt_status(card)}")
         self.load_image(card)
         self.load_map_config(card)
-        self.populate_list()
 
     def resolve_image(self, card: dict) -> Path | None:
         candidates = [
