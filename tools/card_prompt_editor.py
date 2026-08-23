@@ -384,6 +384,7 @@ def self_test(path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_JSON)
+    parser.add_argument("--version", action="version", version=f"v{EDITOR_VERSION}")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--ui-self-test", action="store_true")
     parser.add_argument("--export-tasks", type=Path)
