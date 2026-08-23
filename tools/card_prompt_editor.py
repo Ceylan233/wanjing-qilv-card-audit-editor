@@ -284,6 +284,7 @@ class CardPromptEditor(tk.Tk):
         ttk.Combobox(card_effect, textvariable=self.card_element, values=MAP_ACTION_ELEMENTS, state="normal").grid(row=2, column=1, sticky="ew", padx=3)
         ttk.Label(card_effect, text="始终可用（手填）").grid(row=3, column=0, sticky="w", padx=3)
         ttk.Entry(card_effect, textvariable=self.card_always_available).grid(row=3, column=1, sticky="ew", padx=3)
+        ttk.Button(card_effect, text="识别卡牌内容与备注", command=self.detect_card_content).grid(row=4, column=1, sticky="e", padx=3, pady=(4, 0))
         ttk.Label(tab, text="六色地图行动", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(7, 2))
         actions_box = ttk.LabelFrame(tab, text="地图行动（与背景互动相同：勾选即可）", padding=4)
         actions_box.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
@@ -308,13 +309,23 @@ class CardPromptEditor(tk.Tk):
             self.map_config_dirty = True
 
     def action_codes_from_card(self, card: dict) -> set[str]:
-        """从已有地点行动/图画行动记录识别六色行动；不读取或修改背景互动。"""
+        """从右侧条内的地点行动记录识别六色行动。"""
         if not card.get("地图", {}).get("是否地点牌", False):
             return set()
         return {
             code
-            for section in ("地点行动", "图画内地点行动")
-            for action in card.get("地图", {}).get(section, [])
+            for action in card.get("地图", {}).get("地点行动", [])
+            for code in [str((action.get("故事书") or {}).get("原值") or "")]
+            if code in {item[0] for item in MAP_ACTION_ROWS}
+        }
+
+    def background_interaction_codes_from_card(self, card: dict) -> set[str]:
+        """从插图中的图画内地点行动识别地图背景互动。"""
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return set()
+        return {
+            code
+            for action in card.get("地图", {}).get("图画内地点行动", [])
             for code in [str((action.get("故事书") or {}).get("原值") or "")]
             if code in {item[0] for item in MAP_ACTION_ROWS}
         }
@@ -331,6 +342,57 @@ class CardPromptEditor(tk.Tk):
         self.map_config_dirty = True
         labels = "、".join(f"{color}{label}" for code, color, label in MAP_ACTION_ROWS if code in detected) or "无"
         self.status_var.set(f"已从行动记录识别六色地图行动：{labels}；地图背景互动未修改")
+
+    def card_text_sources(self, card: dict) -> str:
+        text = card.get("基础文本描述", {})
+        return "\n".join(str(text.get(key) or "") for key in ("中文卡面OCR规范文本", "中文卡面OCR原文", "当前中文描述"))
+
+    def detect_card_content(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return
+        source_text = self.card_text_sources(card)
+        # 对话是卡牌级标记；不把某个交谈行动当成对话文本。
+        self.card_dialogue.set("对话" in source_text)
+        arrivals = card.get("地图", {}).get("地图事件", {}).get("抵达强制事件", [])
+        if not arrivals:
+            arrivals = card.get("地图", {}).get("mandatory_arrival_effects", [])
+        forced = "；".join(str(item.get("text") or "").strip() for item in arrivals if item.get("text"))
+        self.card_forced_effect.set(forced)
+        detected_elements = [element for element in MAP_ACTION_ELEMENTS[1:] if element in source_text]
+        marker = card.get("地图", {}).get("地图元素", {}).get("元素或区域标记")
+        if isinstance(marker, str):
+            detected_elements.extend(element for element in MAP_ACTION_ELEMENTS[1:] if element in marker and element not in detected_elements)
+        self.card_element.set("、".join(detected_elements))
+        always_lines = []
+        for line in source_text.splitlines():
+            line = " ".join(line.split()).strip(" 。")
+            if "始终可用" in line:
+                always_lines.append(line)
+        self.card_always_available.set("；".join(dict.fromkeys(always_lines)))
+        background_codes = self.background_interaction_codes_from_card(card)
+        for code, _color, _label in MAP_ACTION_ROWS:
+            self.map_background_vars[code].set(code in background_codes)
+        action_codes = self.action_codes_from_card(card)
+        for code, _color, _label in MAP_ACTION_ROWS:
+            self.map_action_vars[code]["enabled"].set(code in action_codes)
+        grouped: dict[str, list[str]] = {}
+        for action in card.get("地图", {}).get("地点行动", []):
+                code = str((action.get("故事书") or {}).get("原值") or "")
+                name = str(action.get("行动文字") or "").strip()
+                if code in action_codes and name:
+                    grouped.setdefault(code, []).append(name)
+        note_lines = []
+        for code, color, label in MAP_ACTION_ROWS:
+            names = list(dict.fromkeys(grouped.get(code, [])))
+            if len(names) > 1:
+                note_lines.append(f"{color}{label}：" + "、".join(names))
+        self.map_action_note.delete("1.0", tk.END)
+        self.map_action_note.insert("1.0", "\n".join(note_lines))
+        self.map_config_dirty = True
+        self.status_var.set("已识别卡牌内容、六色行动和同色多行动备注；地图背景互动未修改")
 
     def map_color_checkbutton(self, parent: tk.Misc, code: str, text: str, variable: tk.BooleanVar) -> tk.Checkbutton:
         return tk.Checkbutton(
@@ -351,8 +413,7 @@ class CardPromptEditor(tk.Tk):
         stored = review.get("地图行动配置", {}).get("地图背景互动", {})
         if isinstance(stored, dict) and stored:
             return {code for code, enabled in stored.items() if enabled}
-        # 故事书行动类型不是地图背景互动；没有人工配置时保持未选，避免两套字段互相污染。
-        return set()
+        return self.background_interaction_codes_from_card(card)
 
     def load_map_config(self, card: dict) -> None:
         config = card.get("人工校对", {}).get("地图行动配置", {})
