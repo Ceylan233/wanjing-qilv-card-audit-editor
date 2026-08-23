@@ -18,8 +18,13 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageTk
 
-EDITOR_VERSION = "0.1.0"
+try:
+    from editor_build_version import EDITOR_VERSION
+except ImportError:
+    EDITOR_VERSION = "0.3.39"
+
 def find_project() -> Path:
     """Find a local project beside the EXE or current working directory."""
     starts = [Path.cwd()]
@@ -125,13 +130,15 @@ class CardPromptEditor(tk.Tk):
     def __init__(self, path: Path):
         super().__init__()
         self.title(f"万境奇旅｜卡牌提示词编辑器 v{EDITOR_VERSION}")
-        self.geometry("900x680")
-        self.minsize(760, 520)
+        self.geometry("1380x820")
+        self.minsize(1040, 620)
         self.path = path
         self.document = load_document(path)
         self.cards = sorted(self.document["卡牌"], key=lambda card: int(card.get("编号", 0) or 0))
         self.by_number = {card_number(card): card for card in self.cards}
         self.current_number: str | None = None
+        self.image_source: Image.Image | None = None
+        self.image_tk: ImageTk.PhotoImage | None = None
         self.dirty = False
         self.search_var = tk.StringVar()
         self.filter_var = tk.StringVar(value="全部")
@@ -147,9 +154,10 @@ class CardPromptEditor(tk.Tk):
     def _build(self) -> None:
         self.rowconfigure(1, weight=1)
         self.columnconfigure(0, weight=0, minsize=250)
-        self.columnconfigure(1, weight=1)
+        self.columnconfigure(1, weight=3, minsize=420)
+        self.columnconfigure(2, weight=2, minsize=360)
         toolbar = ttk.Frame(self, padding=8)
-        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        toolbar.grid(row=0, column=0, columnspan=3, sticky="ew")
         toolbar.columnconfigure(0, weight=1)
         ttk.Label(toolbar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
         ttk.Button(toolbar, text="保存", command=self.save).grid(row=0, column=1, padx=4)
@@ -179,8 +187,16 @@ class CardPromptEditor(tk.Tk):
         self.card_list.configure(yscrollcommand=scroll.set)
         self.card_list.bind("<<ListboxSelect>>", self.on_select)
 
+        image_frame = ttk.Frame(self, padding=(5, 0, 5, 8))
+        image_frame.grid(row=1, column=1, sticky="nsew")
+        image_frame.rowconfigure(0, weight=1)
+        image_frame.columnconfigure(0, weight=1)
+        self.image_canvas = tk.Canvas(image_frame, bg="#202124", highlightthickness=0)
+        self.image_canvas.grid(row=0, column=0, sticky="nsew")
+        self.image_canvas.bind("<Configure>", lambda _event: self.refresh_image())
+
         right = ttk.Frame(self, padding=(5, 0, 8, 8))
-        right.grid(row=1, column=1, sticky="nsew")
+        right.grid(row=1, column=2, sticky="nsew")
         right.rowconfigure(2, weight=1)
         right.columnconfigure(0, weight=1)
         ttk.Label(right, textvariable=self.current_status, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w")
@@ -234,6 +250,56 @@ class CardPromptEditor(tk.Tk):
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.insert("1.0", text)
         self.current_status.set(f"卡牌 {number}｜{prompt_status(self.by_number[number])}")
+        self.load_image(self.by_number[number])
+
+    def resolve_image(self, card: dict) -> Path | None:
+        candidates = [
+            card.get("基础信息", {}).get("中文源图片"),
+            card.get("原始结构化卡牌数据", {}).get("source_image"),
+        ]
+        texture = card.get("基础信息", {}).get("贴图资源")
+        if texture and str(texture).startswith("res://"):
+            candidates.append(PROJECT / str(texture)[6:])
+        folder = "大卡" if card.get("地图", {}).get("是否地点牌") else "标准卡"
+        candidates.extend([
+            PROJECT / "正式素材" / folder / f"{card_number(card)}.jpg",
+            self.path.parent / "正式素材" / folder / f"{card_number(card)}.jpg",
+        ])
+        for value in candidates:
+            if value:
+                path = Path(value).expanduser()
+                if path.is_file():
+                    return path
+        return None
+
+    def load_image(self, card: dict) -> None:
+        path = self.resolve_image(card)
+        self.image_source = None
+        if path:
+            try:
+                image = Image.open(path).convert("RGB")
+                rotation = int((card.get("人工校对") or {}).get("图片显示旋转度数", 0) or 0) % 360
+                self.image_source = image.rotate(-rotation, expand=True) if rotation else image
+            except OSError:
+                self.image_source = None
+        self.refresh_image()
+
+    def refresh_image(self) -> None:
+        if not hasattr(self, "image_canvas"):
+            return
+        self.image_canvas.delete("all")
+        width = max(200, self.image_canvas.winfo_width() - 20)
+        height = max(200, self.image_canvas.winfo_height() - 20)
+        if self.image_source is None:
+            self.image_canvas.create_text(width / 2, height / 2, text="找不到中文卡图", fill="white", font=("Segoe UI", 13))
+            return
+        scale = min(width / self.image_source.width, height / self.image_source.height)
+        resized = self.image_source.resize(
+            (max(1, int(self.image_source.width * scale)), max(1, int(self.image_source.height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+        self.image_tk = ImageTk.PhotoImage(resized)
+        self.image_canvas.create_image(width / 2, height / 2, image=self.image_tk, anchor="center")
 
     def save_current(self) -> None:
         if not self.current_number:
@@ -293,6 +359,14 @@ class CardPromptEditor(tk.Tk):
         self.destroy()
 
 
+def ui_self_test(path: Path) -> int:
+    editor = CardPromptEditor(path)
+    editor.update_idletasks()
+    result = 0 if editor.image_source is not None and editor.current_number == "0002" else 5
+    editor.destroy()
+    return result
+
+
 def self_test(path: Path) -> int:
     document = load_document(path)
     cards = document["卡牌"]
@@ -311,6 +385,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_JSON)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--ui-self-test", action="store_true")
     parser.add_argument("--export-tasks", type=Path)
     args = parser.parse_args()
     if args.self_test:
@@ -318,6 +393,12 @@ def main() -> int:
             return self_test(args.path)
         except (OSError, ValueError, KeyError, TypeError) as exc:
             print(f"自检失败：{exc}")
+            return 2
+    if args.ui_self_test:
+        try:
+            return ui_self_test(args.path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"界面自检失败：{exc}")
             return 2
     if args.export_tasks:
         document = load_document(args.path)

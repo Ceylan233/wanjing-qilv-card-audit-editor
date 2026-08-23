@@ -14,6 +14,7 @@
 !/tools/card_summary.py
 !/tools/card_prompt_editor.py
 !/tools/build_card_prompt_editor_appimage.sh
+!/tools/editor_build_version.py
 !/tools/build_manual_card_audit_appimage.sh
 !/tools/test_card_audit_linux_gui.sh
 !/tools/steamdeck_card_audit_launcher.sh

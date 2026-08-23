@@ -31,6 +31,11 @@ except ImportError:  # 源码环境未安装时仍尝试使用系统证书
 
 from PIL import Image, ImageDraw, ImageTk
 
+try:
+    from editor_build_version import EDITOR_VERSION as EMBEDDED_EDITOR_VERSION
+except ImportError:
+    EMBEDDED_EDITOR_VERSION = ""
+
 from card_summary import (
     SUMMARY_SCHEMA_VERSION,
     build_card_summary,
@@ -103,7 +108,12 @@ DEFAULT_IMAGE_ROTATIONS = {
     "1146": 180,
     "1150": 90,
 }
-EDITOR_VERSION = re.sub(r"^(?:editor-)?v", "", os.environ.get("CARD_AUDIT_EDITOR_VERSION", "0.3.36"), flags=re.IGNORECASE)
+EDITOR_VERSION = re.sub(
+    r"^(?:editor-)?v",
+    "",
+    os.environ.get("CARD_AUDIT_EDITOR_VERSION") or EMBEDDED_EDITOR_VERSION or "0.3.36",
+    flags=re.IGNORECASE,
+)
 UPDATE_REPOSITORY = "Ceylan233/wanjing-qilv-card-audit-editor"
 WINDOWS_UPDATE_ASSET = "wanjing-card-audit-editor-windows.exe"
 LINUX_UPDATE_ASSET = "wanjing-card-audit-editor-linux.AppImage"

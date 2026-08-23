@@ -8,6 +8,11 @@ APPDIR="$BUILD_DIR/AppDir"
 DIST_DIR="$PROJECT_DIR/校对工具"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 
+if [ -n "${CARD_AUDIT_EDITOR_VERSION:-}" ]; then
+  version="${CARD_AUDIT_EDITOR_VERSION#editor-v}"
+  printf 'EDITOR_VERSION = "%s"\n' "$version" > "$PROJECT_DIR/tools/editor_build_version.py"
+fi
+
 mkdir -p "$BUILD_DIR" "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps" "$DIST_DIR"
 
 if ! dpkg-query -W -f='${Status}' python3-tk 2>/dev/null | grep -q 'install ok installed'; then
