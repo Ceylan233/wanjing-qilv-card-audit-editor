@@ -25,6 +25,17 @@ try:
 except ImportError:
     EDITOR_VERSION = "0.3.39"
 
+MAP_ACTION_ROWS = [
+    ("move", "蓝色", "移动"),
+    ("look", "紫色", "查看"),
+    ("engage", "橙色", "接触"),
+    ("help", "绿色", "帮助"),
+    ("take", "黄色", "获取"),
+    ("overpower", "红色", "压制"),
+]
+MAP_ACTION_EFFECTS = ["", "受到1点伤害", "受到1点缺氧伤害", "受到1点高温伤害", "失去1点时间", "失去1点士气", "获得1点强化", "获得1点随机技能", "退出", "继续"]
+MAP_ACTION_ELEMENTS = ["", "智慧生物", "动物", "元素体", "植物", "构筑物", "宝箱", "飞船残骸", "符文投射器"]
+
 def find_project() -> Path:
     """Find a local project beside the EXE or current working directory."""
     starts = [Path.cwd()]
@@ -140,8 +151,11 @@ class CardPromptEditor(tk.Tk):
         self.image_source: Image.Image | None = None
         self.image_tk: ImageTk.PhotoImage | None = None
         self.dirty = False
+        self.map_config_dirty = False
         self.search_var = tk.StringVar()
         self.filter_var = tk.StringVar(value="全部")
+        self.map_interaction_filter = tk.StringVar(value="全部")
+        self.visible_card_numbers: list[str] = []
         self.current_status = tk.StringVar(value="未选择")
         self.status_var = tk.StringVar(value=f"已加载 {len(self.cards)} 张卡")
         self._build()
@@ -166,7 +180,7 @@ class CardPromptEditor(tk.Tk):
 
         left = ttk.Frame(self, padding=(8, 0, 5, 8))
         left.grid(row=1, column=0, sticky="nsew")
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(3, weight=1)
         left.columnconfigure(0, weight=1)
         ttk.Label(left, text="卡牌编号").grid(row=0, column=0, sticky="w")
         search = ttk.Entry(left, textvariable=self.search_var)
@@ -176,8 +190,11 @@ class CardPromptEditor(tk.Tk):
         self.filter_box.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=(3, 5))
         self.filter_box.bind("<<ComboboxSelected>>", lambda _event: self.populate_list())
         left.columnconfigure(1, weight=0)
+        self.map_filter_box = ttk.Combobox(left, textvariable=self.map_interaction_filter, state="readonly", values=["全部", "有地图互动", "无地图互动"])
+        self.map_filter_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        self.map_filter_box.bind("<<ComboboxSelected>>", lambda _event: self.populate_list())
         list_frame = ttk.Frame(left)
-        list_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        list_frame.grid(row=3, column=0, columnspan=2, sticky="nsew")
         list_frame.rowconfigure(0, weight=1)
         list_frame.columnconfigure(0, weight=1)
         self.card_list = tk.Listbox(list_frame, exportselection=False, font=("Consolas", 11))
@@ -197,22 +214,170 @@ class CardPromptEditor(tk.Tk):
 
         right = ttk.Frame(self, padding=(5, 0, 8, 8))
         right.grid(row=1, column=2, sticky="nsew")
-        right.rowconfigure(2, weight=1)
+        right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
         ttk.Label(right, textvariable=self.current_status, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(right, text="只填写给 Codex 的事实纠正提示词；留空表示该卡还没有提示词。", foreground="#6b4b00").grid(row=1, column=0, sticky="w", pady=(8, 4))
-        self.prompt_text = tk.Text(right, wrap="word", undo=True, font=("Segoe UI", 12), bg="#fff8dc")
-        self.prompt_text.grid(row=2, column=0, sticky="nsew")
+        self.editor_tabs = ttk.Notebook(right)
+        self.editor_tabs.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        self._build_prompt_tab()
+        self._build_map_action_tab()
         buttons = ttk.Frame(right)
-        buttons.grid(row=3, column=0, sticky="e", pady=(6, 0))
+        buttons.grid(row=2, column=0, sticky="e", pady=(6, 0))
         ttk.Button(buttons, text="上一张", command=lambda: self.move_selection(-1)).pack(side="left", padx=3)
         ttk.Button(buttons, text="下一张", command=lambda: self.move_selection(1)).pack(side="left", padx=3)
         ttk.Button(buttons, text="保存当前提示词", command=self.save_current).pack(side="left", padx=3)
         self.bind("<Control-s>", lambda _event: self.save())
 
+    def _build_prompt_tab(self) -> None:
+        tab = ttk.Frame(self.editor_tabs, padding=6)
+        self.editor_tabs.add(tab, text="提示词")
+        tab.rowconfigure(1, weight=1)
+        tab.columnconfigure(0, weight=1)
+        ttk.Label(tab, text="给 Codex 的事实纠正提示词；留空表示该卡还没有提示词。", foreground="#6b4b00", wraplength=420).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.prompt_text = tk.Text(tab, wrap="word", undo=True, font=("Segoe UI", 12), bg="#fff8dc")
+        self.prompt_text.grid(row=1, column=0, sticky="nsew")
+
+    def _build_map_action_tab(self) -> None:
+        outer = ttk.Frame(self.editor_tabs)
+        self.editor_tabs.add(outer, text="地图行动")
+        self.map_action_page = outer
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        scroll = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scroll.set)
+        tab = ttk.Frame(canvas, padding=6)
+        tab.columnconfigure(1, weight=1)
+        window = canvas.create_window((0, 0), window=tab, anchor="nw")
+        tab.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))
+        ttk.Label(tab, text="地点卡没有挑战骰槽。地图背景互动只用于筛选；六色地图行动会自动生成提示词。", foreground="#174f2a", wraplength=420, justify="left").grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        background = ttk.LabelFrame(tab, text="地图背景互动（不属于地图行动）", padding=4)
+        background.grid(row=1, column=0, columnspan=2, sticky="ew", pady=3)
+        self.map_background_vars: dict[str, tk.BooleanVar] = {}
+        for index, (code, color, label) in enumerate(MAP_ACTION_ROWS):
+            variable = tk.BooleanVar(value=False)
+            variable.trace_add("write", self.note_map_config_edit)
+            self.map_background_vars[code] = variable
+            ttk.Checkbutton(background, text=f"{color}{label}", variable=variable).grid(row=index // 2, column=index % 2, sticky="w", padx=4)
+        ttk.Label(tab, text="六色地图行动", font=("Segoe UI", 10, "bold")).grid(row=2, column=0, columnspan=2, sticky="w", pady=(7, 2))
+        self.map_action_vars: dict[str, dict[str, tk.Variable]] = {}
+        for row, (code, color, label) in enumerate(MAP_ACTION_ROWS, start=3):
+            box = ttk.LabelFrame(tab, text=f"{color}{label}", padding=4)
+            box.grid(row=row, column=0, columnspan=2, sticky="ew", pady=3)
+            box.columnconfigure(1, weight=1)
+            values: dict[str, tk.Variable] = {
+                "enabled": tk.BooleanVar(value=False), "always": tk.BooleanVar(value=False),
+                "dialogue": tk.StringVar(), "effect": tk.StringVar(), "element": tk.StringVar(),
+            }
+            self.map_action_vars[code] = values
+            for variable in values.values():
+                variable.trace_add("write", self.note_map_config_edit)
+            ttk.Checkbutton(box, text="作为地图行动", variable=values["enabled"]).grid(row=0, column=0, sticky="w", padx=3)
+            ttk.Checkbutton(box, text="始终可用", variable=values["always"]).grid(row=0, column=1, sticky="w", padx=3)
+            ttk.Label(box, text="对话").grid(row=1, column=0, sticky="w", padx=3)
+            ttk.Entry(box, textvariable=values["dialogue"]).grid(row=1, column=1, sticky="ew", padx=3)
+            ttk.Label(box, text="强制效果").grid(row=2, column=0, sticky="w", padx=3)
+            ttk.Combobox(box, textvariable=values["effect"], values=MAP_ACTION_EFFECTS, state="normal").grid(row=2, column=1, sticky="ew", padx=3)
+            ttk.Label(box, text="元素").grid(row=3, column=0, sticky="w", padx=3)
+            ttk.Combobox(box, textvariable=values["element"], values=MAP_ACTION_ELEMENTS, state="normal").grid(row=3, column=1, sticky="ew", padx=3)
+        ttk.Button(tab, text="根据选择生成提示词", command=self.generate_map_prompt).grid(row=9, column=1, sticky="e", pady=8)
+
+    def note_map_config_edit(self, *_args) -> None:
+        if self.current_number:
+            self.map_config_dirty = True
+
+    def map_interaction_codes(self, card: dict) -> set[str]:
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return set()
+        review = card.get("人工校对", {})
+        stored = review.get("地图行动配置", {}).get("地图背景互动", {})
+        if isinstance(stored, dict) and stored:
+            return {code for code, enabled in stored.items() if enabled}
+        codes = set()
+        for section in ("地点行动", "图画内地点行动"):
+            for action in card.get("地图", {}).get(section, []):
+                code = str((action.get("故事书") or {}).get("原值") or "")
+                if code in {item[0] for item in MAP_ACTION_ROWS}:
+                    codes.add(code)
+        return codes
+
+    def load_map_config(self, card: dict) -> None:
+        config = card.get("人工校对", {}).get("地图行动配置", {})
+        actions = config.get("地图行动", {}) if isinstance(config, dict) else {}
+        background = self.map_interaction_codes(card)
+        for code, _color, _label in MAP_ACTION_ROWS:
+            self.map_background_vars[code].set(code in background)
+            item = actions.get(code, {}) if isinstance(actions, dict) else {}
+            values = self.map_action_vars[code]
+            values["enabled"].set(bool(item.get("启用", False)))
+            values["always"].set(bool(item.get("始终可用", False)))
+            values["dialogue"].set(str(item.get("对话") or ""))
+            values["effect"].set(str(item.get("强制效果") or ""))
+            values["element"].set(str(item.get("元素") or ""))
+        is_location = bool(card.get("地图", {}).get("是否地点牌", False))
+        self.editor_tabs.tab(self.map_action_page, state="normal" if is_location else "hidden")
+        if not is_location:
+            self.editor_tabs.select(0)
+        self.map_config_dirty = False
+
+    def collect_map_config(self) -> dict:
+        actions = {}
+        for code, _color, _label in MAP_ACTION_ROWS:
+            values = self.map_action_vars[code]
+            actions[code] = {
+                "启用": bool(values["enabled"].get()),
+                "始终可用": bool(values["always"].get()),
+                "对话": str(values["dialogue"].get()).strip(),
+                "强制效果": str(values["effect"].get()).strip(),
+                "元素": str(values["element"].get()).strip(),
+            }
+        return {
+            "版本": 1,
+            "地图背景互动": {code: bool(variable.get()) for code, variable in self.map_background_vars.items()},
+            "地图行动": actions,
+        }
+
+    def build_map_prompt(self, card: dict, config: dict) -> str:
+        background = config["地图背景互动"]
+        actions = config["地图行动"]
+        interaction_labels = [f"{color}{label}" for code, color, label in MAP_ACTION_ROWS if background.get(code)]
+        lines = [f"卡牌 {card_number(card)} 是地点卡，不含挑战骰槽。"]
+        lines.append("地图背景互动（仅用于筛选，不属于地图行动）：" + ("、".join(interaction_labels) if interaction_labels else "无") + "。")
+        selected = []
+        for code, color, label in MAP_ACTION_ROWS:
+            item = actions[code]
+            if not item["启用"]:
+                continue
+            details = ["始终可用" if item["始终可用"] else "非始终可用"]
+            if item["对话"]:
+                details.append(f"对话：{item['对话']}")
+            if item["强制效果"]:
+                details.append(f"强制效果：{item['强制效果']}")
+            if item["元素"]:
+                details.append(f"元素：{item['元素']}")
+            selected.append(f"{color}{label}地图行动：" + "；".join(details) + "。")
+        lines.append("地图行动：" + ("\n".join(selected) if selected else "无。"))
+        lines.append("请只更新地点卡的地图行动和对应运行逻辑；不要创建或修改挑战骰槽。")
+        return "\n".join(lines)
+
+    def generate_map_prompt(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", self.build_map_prompt(card, self.collect_map_config()))
+        self.map_config_dirty = True
+        self.status_var.set("已按六色地图行动生成提示词；保存或切换卡牌时写入")
+
     def visible_numbers(self) -> list[str]:
         query = self.search_var.get().strip().lower()
         wanted = self.filter_var.get()
+        wanted_map_interaction = self.map_interaction_filter.get()
         result = []
         for card in self.cards:
             number = card_number(card)
@@ -220,6 +385,11 @@ class CardPromptEditor(tk.Tk):
             if query and query not in number.lower():
                 continue
             if wanted != "全部" and status != wanted:
+                continue
+            has_map_interaction = bool(self.map_interaction_codes(card))
+            if wanted_map_interaction == "有地图互动" and not has_map_interaction:
+                continue
+            if wanted_map_interaction == "无地图互动" and has_map_interaction:
                 continue
             result.append(number)
         return result
@@ -229,12 +399,12 @@ class CardPromptEditor(tk.Tk):
 
     def populate_list(self) -> None:
         selected = self.current_number
-        numbers = self.visible_numbers()
+        self.visible_card_numbers = self.visible_numbers()
         self.card_list.delete(0, tk.END)
-        for number in numbers:
+        for number in self.visible_card_numbers:
             self.card_list.insert(tk.END, self.row_text(self.by_number[number]))
-        if selected in numbers:
-            index = numbers.index(selected)
+        if selected in self.visible_card_numbers:
+            index = self.visible_card_numbers.index(selected)
             self.card_list.selection_set(index)
             self.card_list.see(index)
 
@@ -242,15 +412,21 @@ class CardPromptEditor(tk.Tk):
         selected = self.card_list.curselection()
         if not selected:
             return
-        number = self.card_list.get(selected[0]).split()[0]
+        index = int(selected[0])
+        if index >= len(self.visible_card_numbers):
+            return
+        number = self.visible_card_numbers[index]
         if self.current_number and number != self.current_number:
-            self.save_current()
+            self.save_current(refresh_list=False)
         self.current_number = number
-        text = prompt_value(self.by_number[number])
+        card = self.by_number[number]
+        text = prompt_value(card)
         self.prompt_text.delete("1.0", tk.END)
         self.prompt_text.insert("1.0", text)
-        self.current_status.set(f"卡牌 {number}｜{prompt_status(self.by_number[number])}")
-        self.load_image(self.by_number[number])
+        self.current_status.set(f"卡牌 {number}｜{prompt_status(card)}")
+        self.load_image(card)
+        self.load_map_config(card)
+        self.populate_list()
 
     def resolve_image(self, card: dict) -> Path | None:
         candidates = [
@@ -301,14 +477,23 @@ class CardPromptEditor(tk.Tk):
         self.image_tk = ImageTk.PhotoImage(resized)
         self.image_canvas.create_image(width / 2, height / 2, image=self.image_tk, anchor="center")
 
-    def save_current(self) -> None:
+    def save_current(self, refresh_list: bool = True) -> None:
         if not self.current_number:
             return
         card = self.by_number[self.current_number]
+        config_changed = False
+        if self.map_config_dirty and card.get("地图", {}).get("是否地点牌", False):
+            config = self.collect_map_config()
+            card.setdefault("人工校对", {})["地图行动配置"] = config
+            self.prompt_text.delete("1.0", tk.END)
+            self.prompt_text.insert("1.0", self.build_map_prompt(card, config))
+            config_changed = True
         changed = apply_prompt(card, self.prompt_text.get("1.0", "end-1c"))
-        self.dirty = self.dirty or changed
+        self.dirty = self.dirty or changed or config_changed
+        self.map_config_dirty = False
         self.current_status.set(f"卡牌 {self.current_number}｜{prompt_status(card)}")
-        self.populate_list()
+        if refresh_list:
+            self.populate_list()
         self.status_var.set(f"当前卡牌 {self.current_number} 的提示词已暂存" if changed else f"当前卡牌 {self.current_number} 没有变化")
 
     def save(self) -> None:
@@ -362,7 +547,36 @@ class CardPromptEditor(tk.Tk):
 def ui_self_test(path: Path) -> int:
     editor = CardPromptEditor(path)
     editor.update_idletasks()
-    result = 0 if editor.image_source is not None and editor.current_number == "0002" else 5
+    if editor.image_source is None or editor.current_number != "0002":
+        editor.destroy()
+        return 5
+    editor.map_action_vars["move"]["enabled"].set(True)
+    editor.map_action_vars["move"]["always"].set(True)
+    editor.map_action_vars["move"]["effect"].set("受到1点缺氧伤害")
+    editor.generate_map_prompt()
+    if "地点卡，不含挑战骰槽" not in editor.prompt_text.get("1.0", "end-1c"):
+        editor.destroy()
+        return 6
+    if len(editor.visible_card_numbers) < 2:
+        editor.destroy()
+        return 7
+    editor.card_list.selection_clear(0, tk.END)
+    editor.card_list.selection_set(1)
+    editor.on_select()
+    if editor.current_number != editor.visible_card_numbers[1]:
+        editor.destroy()
+        return 8
+    small_number = next((number for number, card in editor.by_number.items() if not card.get("地图", {}).get("是否地点牌", False)), "")
+    if not small_number:
+        editor.destroy()
+        return 9
+    editor.card_list.selection_clear(0, tk.END)
+    editor.card_list.selection_set(editor.visible_card_numbers.index(small_number))
+    editor.on_select()
+    if editor.editor_tabs.tab(editor.map_action_page, "state") != "hidden":
+        editor.destroy()
+        return 10
+    result = 0
     editor.destroy()
     return result
 
