@@ -262,28 +262,39 @@ class CardPromptEditor(tk.Tk):
             variable.trace_add("write", self.note_map_config_edit)
             self.map_background_vars[code] = variable
             ttk.Checkbutton(background, text=f"{color}{label}", variable=variable).grid(row=index // 2, column=index % 2, sticky="w", padx=4)
-        ttk.Label(tab, text="六色地图行动", font=("Segoe UI", 10, "bold")).grid(row=2, column=0, columnspan=2, sticky="w", pady=(7, 2))
+        card_effect = ttk.LabelFrame(tab, text="卡牌内容（不属于任何地图行动）", padding=4)
+        card_effect.grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
+        card_effect.columnconfigure(1, weight=1)
+        self.card_dialogue = tk.StringVar()
+        self.card_forced_effect = tk.StringVar()
+        self.card_element = tk.StringVar()
+        self.card_dialogue.trace_add("write", self.note_map_config_edit)
+        self.card_forced_effect.trace_add("write", self.note_map_config_edit)
+        self.card_element.trace_add("write", self.note_map_config_edit)
+        ttk.Label(card_effect, text="对话").grid(row=0, column=0, sticky="w", padx=3)
+        ttk.Entry(card_effect, textvariable=self.card_dialogue).grid(row=0, column=1, sticky="ew", padx=3)
+        ttk.Label(card_effect, text="强制效果").grid(row=1, column=0, sticky="w", padx=3)
+        ttk.Combobox(card_effect, textvariable=self.card_forced_effect, values=MAP_ACTION_EFFECTS, state="normal").grid(row=1, column=1, sticky="ew", padx=3)
+        ttk.Label(card_effect, text="元素").grid(row=2, column=0, sticky="w", padx=3)
+        ttk.Combobox(card_effect, textvariable=self.card_element, values=MAP_ACTION_ELEMENTS, state="normal").grid(row=2, column=1, sticky="ew", padx=3)
+        ttk.Label(tab, text="六色地图行动", font=("Segoe UI", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(7, 2))
         self.map_action_vars: dict[str, dict[str, tk.Variable]] = {}
-        for row, (code, color, label) in enumerate(MAP_ACTION_ROWS, start=3):
+        for row, (code, color, label) in enumerate(MAP_ACTION_ROWS, start=4):
             box = ttk.LabelFrame(tab, text=f"{color}{label}", padding=4)
             box.grid(row=row, column=0, columnspan=2, sticky="ew", pady=3)
             box.columnconfigure(1, weight=1)
             values: dict[str, tk.Variable] = {
                 "enabled": tk.BooleanVar(value=False), "always": tk.BooleanVar(value=False),
-                "dialogue": tk.StringVar(), "effect": tk.StringVar(), "element": tk.StringVar(),
+                "note": tk.StringVar(),
             }
             self.map_action_vars[code] = values
             for variable in values.values():
                 variable.trace_add("write", self.note_map_config_edit)
             ttk.Checkbutton(box, text="作为地图行动", variable=values["enabled"]).grid(row=0, column=0, sticky="w", padx=3)
             ttk.Checkbutton(box, text="始终可用", variable=values["always"]).grid(row=0, column=1, sticky="w", padx=3)
-            ttk.Label(box, text="对话").grid(row=1, column=0, sticky="w", padx=3)
-            ttk.Entry(box, textvariable=values["dialogue"]).grid(row=1, column=1, sticky="ew", padx=3)
-            ttk.Label(box, text="强制效果").grid(row=2, column=0, sticky="w", padx=3)
-            ttk.Combobox(box, textvariable=values["effect"], values=MAP_ACTION_EFFECTS, state="normal").grid(row=2, column=1, sticky="ew", padx=3)
-            ttk.Label(box, text="元素").grid(row=3, column=0, sticky="w", padx=3)
-            ttk.Combobox(box, textvariable=values["element"], values=MAP_ACTION_ELEMENTS, state="normal").grid(row=3, column=1, sticky="ew", padx=3)
-        ttk.Button(tab, text="根据选择生成提示词", command=self.generate_map_prompt).grid(row=9, column=1, sticky="e", pady=8)
+            ttk.Label(box, text="备注").grid(row=1, column=0, sticky="w", padx=3)
+            ttk.Entry(box, textvariable=values["note"]).grid(row=1, column=1, sticky="ew", padx=3)
+        ttk.Button(tab, text="根据选择生成提示词", command=self.generate_map_prompt).grid(row=10, column=1, sticky="e", pady=8)
 
     def note_map_config_edit(self, *_args) -> None:
         if self.current_number:
@@ -307,6 +318,12 @@ class CardPromptEditor(tk.Tk):
     def load_map_config(self, card: dict) -> None:
         config = card.get("人工校对", {}).get("地图行动配置", {})
         actions = config.get("地图行动", {}) if isinstance(config, dict) else {}
+        content = config.get("卡牌内容", {}) if isinstance(config, dict) else {}
+        # 兼容刚才尚未保存的早期结构：将行内字段提升为卡牌字段。
+        legacy = next((item for item in actions.values() if isinstance(item, dict) and any(item.get(key) for key in ("对话", "强制效果", "元素"))), {})
+        self.card_dialogue.set(str(content.get("对话") or legacy.get("对话") or ""))
+        self.card_forced_effect.set(str(content.get("强制效果") or legacy.get("强制效果") or ""))
+        self.card_element.set(str(content.get("元素") or legacy.get("元素") or ""))
         background = self.map_interaction_codes(card)
         for code, _color, _label in MAP_ACTION_ROWS:
             self.map_background_vars[code].set(code in background)
@@ -314,9 +331,7 @@ class CardPromptEditor(tk.Tk):
             values = self.map_action_vars[code]
             values["enabled"].set(bool(item.get("启用", False)))
             values["always"].set(bool(item.get("始终可用", False)))
-            values["dialogue"].set(str(item.get("对话") or ""))
-            values["effect"].set(str(item.get("强制效果") or ""))
-            values["element"].set(str(item.get("元素") or ""))
+            values["note"].set(str(item.get("备注") or ""))
         is_location = bool(card.get("地图", {}).get("是否地点牌", False))
         self.editor_tabs.tab(self.map_action_page, state="normal" if is_location else "hidden")
         if not is_location:
@@ -330,34 +345,42 @@ class CardPromptEditor(tk.Tk):
             actions[code] = {
                 "启用": bool(values["enabled"].get()),
                 "始终可用": bool(values["always"].get()),
-                "对话": str(values["dialogue"].get()).strip(),
-                "强制效果": str(values["effect"].get()).strip(),
-                "元素": str(values["element"].get()).strip(),
+                "备注": str(values["note"].get()).strip(),
             }
         return {
             "版本": 1,
             "地图背景互动": {code: bool(variable.get()) for code, variable in self.map_background_vars.items()},
+            "卡牌内容": {
+                "对话": self.card_dialogue.get().strip(),
+                "强制效果": self.card_forced_effect.get().strip(),
+                "元素": self.card_element.get().strip(),
+            },
             "地图行动": actions,
         }
 
     def build_map_prompt(self, card: dict, config: dict) -> str:
         background = config["地图背景互动"]
+        content = config["卡牌内容"]
         actions = config["地图行动"]
         interaction_labels = [f"{color}{label}" for code, color, label in MAP_ACTION_ROWS if background.get(code)]
         lines = [f"卡牌 {card_number(card)} 是地点卡，不含挑战骰槽。"]
         lines.append("地图背景互动（仅用于筛选，不属于地图行动）：" + ("、".join(interaction_labels) if interaction_labels else "无") + "。")
+        card_details = []
+        if content["对话"]:
+            card_details.append(f"对话：{content['对话']}")
+        if content["强制效果"]:
+            card_details.append(f"强制效果：{content['强制效果']}")
+        if content["元素"]:
+            card_details.append(f"元素：{content['元素']}")
+        lines.append("卡牌内容：" + ("；".join(card_details) if card_details else "无。"))
         selected = []
         for code, color, label in MAP_ACTION_ROWS:
             item = actions[code]
             if not item["启用"]:
                 continue
             details = ["始终可用" if item["始终可用"] else "非始终可用"]
-            if item["对话"]:
-                details.append(f"对话：{item['对话']}")
-            if item["强制效果"]:
-                details.append(f"强制效果：{item['强制效果']}")
-            if item["元素"]:
-                details.append(f"元素：{item['元素']}")
+            if item["备注"]:
+                details.append(f"备注：{item['备注']}")
             selected.append(f"{color}{label}地图行动：" + "；".join(details) + "。")
         lines.append("地图行动：" + ("\n".join(selected) if selected else "无。"))
         lines.append("请只更新地点卡的地图行动和对应运行逻辑；不要创建或修改挑战骰槽。")
@@ -552,7 +575,7 @@ def ui_self_test(path: Path) -> int:
         return 5
     editor.map_action_vars["move"]["enabled"].set(True)
     editor.map_action_vars["move"]["always"].set(True)
-    editor.map_action_vars["move"]["effect"].set("受到1点缺氧伤害")
+    editor.card_forced_effect.set("受到1点缺氧伤害")
     editor.generate_map_prompt()
     if "地点卡，不含挑战骰槽" not in editor.prompt_text.get("1.0", "end-1c"):
         editor.destroy()
