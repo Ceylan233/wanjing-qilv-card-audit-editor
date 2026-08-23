@@ -298,11 +298,39 @@ class CardPromptEditor(tk.Tk):
         self.map_action_note = tk.Text(tab, height=5, wrap="word", undo=True, bg="#fff8dc")
         self.map_action_note.grid(row=6, column=0, columnspan=2, sticky="ew")
         self.map_action_note.bind("<KeyRelease>", lambda _event: self.note_map_config_edit())
-        ttk.Button(tab, text="根据选择生成提示词", command=self.generate_map_prompt).grid(row=7, column=1, sticky="e", pady=8)
+        action_buttons = ttk.Frame(tab)
+        action_buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=8)
+        ttk.Button(action_buttons, text="按已有行动记录识别六色", command=self.detect_map_actions).pack(side="left", padx=4)
+        ttk.Button(action_buttons, text="根据选择生成提示词", command=self.generate_map_prompt).pack(side="left", padx=4)
 
     def note_map_config_edit(self, *_args) -> None:
         if self.current_number:
             self.map_config_dirty = True
+
+    def action_codes_from_card(self, card: dict) -> set[str]:
+        """从已有地点行动/图画行动记录识别六色行动；不读取或修改背景互动。"""
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return set()
+        return {
+            code
+            for section in ("地点行动", "图画内地点行动")
+            for action in card.get("地图", {}).get(section, [])
+            for code in [str((action.get("故事书") or {}).get("原值") or "")]
+            if code in {item[0] for item in MAP_ACTION_ROWS}
+        }
+
+    def detect_map_actions(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return
+        detected = self.action_codes_from_card(card)
+        for code, _color, _label in MAP_ACTION_ROWS:
+            self.map_action_vars[code]["enabled"].set(code in detected)
+        self.map_config_dirty = True
+        labels = "、".join(f"{color}{label}" for code, color, label in MAP_ACTION_ROWS if code in detected) or "无"
+        self.status_var.set(f"已从行动记录识别六色地图行动：{labels}；地图背景互动未修改")
 
     def map_color_checkbutton(self, parent: tk.Misc, code: str, text: str, variable: tk.BooleanVar) -> tk.Checkbutton:
         return tk.Checkbutton(
