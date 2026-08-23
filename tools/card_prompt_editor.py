@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""Minimal card-prompt editor and Codex batch task exporter.
+
+This editor intentionally exposes only card number, prompt status, and one
+prompt box. It is a planning surface for Codex; it does not silently mutate
+runtime code by itself.
+"""
+
+from __future__ import annotations
+
+import argparse
+from copy import deepcopy
+from datetime import datetime
+import json
+import os
+from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+
+EDITOR_VERSION = "0.1.0"
+PROJECT = Path(__file__).resolve().parents[1]
+DEFAULT_JSON = PROJECT / "data" / "rules" / "zh_cn" / "manual_card_audit.json"
+
+
+def load_document(path: Path) -> dict:
+    document = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(document, dict) or not isinstance(document.get("卡牌"), list):
+        raise ValueError("文件缺少“卡牌”数组")
+    return document
+
+
+def card_number(card: dict) -> str:
+    return str(card.get("编号", "")).zfill(4)
+
+
+def prompt_value(card: dict) -> str:
+    return str((card.get("人工校对") or {}).get("待AI处理提示词") or "").strip()
+
+
+def prompt_status(card: dict) -> str:
+    review = card.get("人工校对") or {}
+    prompt = prompt_value(card)
+    if not prompt:
+        return "未填写"
+    if str(review.get("AI处理状态") or "") == "已完成":
+        return "已处理"
+    return "已给出提示词"
+
+
+def apply_prompt(card: dict, prompt: str, now: str | None = None) -> bool:
+    prompt = prompt.strip()
+    review = card.setdefault("人工校对", {})
+    previous = prompt_value(card)
+    changed = previous != prompt
+    if prompt:
+        review["待AI处理提示词"] = prompt
+        if changed or not review.get("AI处理状态"):
+            review["AI处理状态"] = "待处理"
+            review["提示词最后修改时间"] = now or datetime.now().astimezone().isoformat(timespec="seconds")
+            review.pop("AI处理结果摘要", None)
+            review.pop("AI处理完成时间", None)
+    else:
+        review.pop("待AI处理提示词", None)
+        review.pop("AI处理状态", None)
+        review.pop("提示词最后修改时间", None)
+        review.pop("AI处理结果摘要", None)
+        review.pop("AI处理完成时间", None)
+    return changed
+
+
+def build_codex_task_package(document: dict, source_path: Path) -> dict:
+    cards = []
+    for card in document.get("卡牌", []):
+        prompt = prompt_value(card)
+        if not prompt:
+            continue
+        cards.append({
+            "编号": card_number(card),
+            "提示词状态": prompt_status(card),
+            "提示词": prompt,
+            "卡牌数据": deepcopy(card),
+        })
+    return {
+        "协议版本": 1,
+        "用途": "将人工卡牌提示词交给 Codex，逐张人工核对卡图并创建或修改对应游戏代码。",
+        "来源文件": str(source_path),
+        "导出时间": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "待处理数量": len(cards),
+        "Codex执行指令": [
+            "逐张处理任务，不得把一张卡的结论套用到其它卡。",
+            "每张卡以该卡的提示词为最高优先级，并核对最终中文卡图。",
+            "修改人工校对总表、runtime_cards、card_abilities及其生成器或权威覆盖源。",
+            "涉及规则时修改对应游戏运行代码，加入或更新针对该卡的回归测试。",
+            "代码完成后运行相关测试；在任务中记录修改文件、测试结果和未解决问题。",
+            "不要只改牌面总结文字；结构化数据和实际运行逻辑必须同步。",
+        ],
+        "卡牌": cards,
+    }
+
+
+def export_codex_tasks(document: dict, source_path: Path, target: Path) -> int:
+    package = build_codex_task_package(document, source_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return int(package["待处理数量"])
+
+
+class CardPromptEditor(tk.Tk):
+    def __init__(self, path: Path):
+        super().__init__()
+        self.title(f"万境奇旅｜卡牌提示词编辑器 v{EDITOR_VERSION}")
+        self.geometry("900x680")
+        self.minsize(760, 520)
+        self.path = path
+        self.document = load_document(path)
+        self.cards = sorted(self.document["卡牌"], key=lambda card: int(card.get("编号", 0) or 0))
+        self.by_number = {card_number(card): card for card in self.cards}
+        self.current_number: str | None = None
+        self.dirty = False
+        self.search_var = tk.StringVar()
+        self.filter_var = tk.StringVar(value="全部")
+        self.current_status = tk.StringVar(value="未选择")
+        self.status_var = tk.StringVar(value=f"已加载 {len(self.cards)} 张卡")
+        self._build()
+        self.populate_list()
+        if self.cards:
+            self.card_list.selection_set(0)
+            self.on_select()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _build(self) -> None:
+        self.rowconfigure(1, weight=1)
+        self.columnconfigure(0, weight=0, minsize=250)
+        self.columnconfigure(1, weight=1)
+        toolbar = ttk.Frame(self, padding=8)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        toolbar.columnconfigure(0, weight=1)
+        ttk.Label(toolbar, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        ttk.Button(toolbar, text="保存", command=self.save).grid(row=0, column=1, padx=4)
+        ttk.Button(toolbar, text="导出 Codex 任务包", command=self.export_tasks).grid(row=0, column=2, padx=4)
+        ttk.Button(toolbar, text="导出全部提示词", command=self.export_all).grid(row=0, column=3, padx=4)
+
+        left = ttk.Frame(self, padding=(8, 0, 5, 8))
+        left.grid(row=1, column=0, sticky="nsew")
+        left.rowconfigure(2, weight=1)
+        left.columnconfigure(0, weight=1)
+        ttk.Label(left, text="卡牌编号").grid(row=0, column=0, sticky="w")
+        search = ttk.Entry(left, textvariable=self.search_var)
+        search.grid(row=1, column=0, sticky="ew", pady=(3, 5))
+        search.bind("<KeyRelease>", lambda _event: self.populate_list())
+        self.filter_box = ttk.Combobox(left, textvariable=self.filter_var, state="readonly", values=["全部", "未填写", "已给出提示词", "已处理"])
+        self.filter_box.grid(row=1, column=1, sticky="ew", padx=(5, 0), pady=(3, 5))
+        self.filter_box.bind("<<ComboboxSelected>>", lambda _event: self.populate_list())
+        left.columnconfigure(1, weight=0)
+        list_frame = ttk.Frame(left)
+        list_frame.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
+        self.card_list = tk.Listbox(list_frame, exportselection=False, font=("Consolas", 11))
+        self.card_list.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.card_list.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.card_list.configure(yscrollcommand=scroll.set)
+        self.card_list.bind("<<ListboxSelect>>", self.on_select)
+
+        right = ttk.Frame(self, padding=(5, 0, 8, 8))
+        right.grid(row=1, column=1, sticky="nsew")
+        right.rowconfigure(2, weight=1)
+        right.columnconfigure(0, weight=1)
+        ttk.Label(right, textvariable=self.current_status, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(right, text="只填写给 Codex 的事实纠正提示词；留空表示该卡还没有提示词。", foreground="#6b4b00").grid(row=1, column=0, sticky="w", pady=(8, 4))
+        self.prompt_text = tk.Text(right, wrap="word", undo=True, font=("Segoe UI", 12), bg="#fff8dc")
+        self.prompt_text.grid(row=2, column=0, sticky="nsew")
+        buttons = ttk.Frame(right)
+        buttons.grid(row=3, column=0, sticky="e", pady=(6, 0))
+        ttk.Button(buttons, text="上一张", command=lambda: self.move_selection(-1)).pack(side="left", padx=3)
+        ttk.Button(buttons, text="下一张", command=lambda: self.move_selection(1)).pack(side="left", padx=3)
+        ttk.Button(buttons, text="保存当前提示词", command=self.save_current).pack(side="left", padx=3)
+        self.bind("<Control-s>", lambda _event: self.save())
+
+    def visible_numbers(self) -> list[str]:
+        query = self.search_var.get().strip().lower()
+        wanted = self.filter_var.get()
+        result = []
+        for card in self.cards:
+            number = card_number(card)
+            status = prompt_status(card)
+            if query and query not in number.lower():
+                continue
+            if wanted != "全部" and status != wanted:
+                continue
+            result.append(number)
+        return result
+
+    def row_text(self, card: dict) -> str:
+        return f"{card_number(card)}    {prompt_status(card)}"
+
+    def populate_list(self) -> None:
+        selected = self.current_number
+        numbers = self.visible_numbers()
+        self.card_list.delete(0, tk.END)
+        for number in numbers:
+            self.card_list.insert(tk.END, self.row_text(self.by_number[number]))
+        if selected in numbers:
+            index = numbers.index(selected)
+            self.card_list.selection_set(index)
+            self.card_list.see(index)
+
+    def on_select(self, _event=None) -> None:
+        selected = self.card_list.curselection()
+        if not selected:
+            return
+        number = self.card_list.get(selected[0]).split()[0]
+        if self.current_number and number != self.current_number:
+            self.save_current()
+        self.current_number = number
+        text = prompt_value(self.by_number[number])
+        self.prompt_text.delete("1.0", tk.END)
+        self.prompt_text.insert("1.0", text)
+        self.current_status.set(f"卡牌 {number}｜{prompt_status(self.by_number[number])}")
+
+    def save_current(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        changed = apply_prompt(card, self.prompt_text.get("1.0", "end-1c"))
+        self.dirty = self.dirty or changed
+        self.current_status.set(f"卡牌 {self.current_number}｜{prompt_status(card)}")
+        self.populate_list()
+        self.status_var.set(f"当前卡牌 {self.current_number} 的提示词已暂存" if changed else f"当前卡牌 {self.current_number} 没有变化")
+
+    def save(self) -> None:
+        self.save_current()
+        if not self.dirty:
+            self.status_var.set("没有需要保存的修改")
+            return
+        self.path.write_text(json.dumps(self.document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self.dirty = False
+        self.status_var.set(f"已保存：{self.path.name}")
+
+    def export_tasks(self) -> None:
+        self.save_current()
+        target = filedialog.asksaveasfilename(title="导出 Codex 任务包", initialdir=str(self.path.parent), initialfile="card_prompt_codex_tasks.json", defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not target:
+            return
+        count = export_codex_tasks(self.document, self.path, Path(target))
+        self.status_var.set(f"已导出 {count} 张卡的 Codex 任务包")
+        messagebox.showinfo("导出完成", f"已导出 {count} 张卡。\n\n{target}")
+
+    def export_all(self) -> None:
+        self.save_current()
+        target = filedialog.asksaveasfilename(title="导出全部提示词", initialdir=str(self.path.parent), initialfile="card_prompts.json", defaultextension=".json", filetypes=[("JSON", "*.json")])
+        if not target:
+            return
+        payload = {"协议版本": 1, "总数": len(self.cards), "卡牌": [{"编号": card_number(card), "提示词状态": prompt_status(card), "提示词": prompt_value(card)} for card in self.cards]}
+        Path(target).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self.status_var.set(f"已导出全部 {len(self.cards)} 张卡的提示词")
+
+    def move_selection(self, delta: int) -> None:
+        numbers = self.visible_numbers()
+        if not numbers:
+            return
+        current = numbers.index(self.current_number) if self.current_number in numbers else 0
+        target = max(0, min(len(numbers) - 1, current + delta))
+        self.card_list.selection_clear(0, tk.END)
+        self.card_list.selection_set(target)
+        self.card_list.see(target)
+        self.on_select()
+
+    def on_close(self) -> None:
+        if self.dirty:
+            answer = messagebox.askyesnocancel("有未保存修改", "是否保存提示词后退出？")
+            if answer is None:
+                return
+            if answer:
+                self.save()
+        self.destroy()
+
+
+def self_test(path: Path) -> int:
+    document = load_document(path)
+    cards = document["卡牌"]
+    if len(cards) != 1713:
+        return 2
+    numbers = [card_number(card) for card in cards]
+    if len(set(numbers)) != len(numbers) or numbers[0] != "0002" or numbers[-1] != "1714":
+        return 3
+    package = build_codex_task_package(document, path)
+    if package["待处理数量"] != sum(bool(prompt_value(card)) for card in cards):
+        return 4
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path", nargs="?", type=Path, default=DEFAULT_JSON)
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--export-tasks", type=Path)
+    args = parser.parse_args()
+    if args.self_test:
+        return self_test(args.path)
+    if args.export_tasks:
+        document = load_document(args.path)
+        print(export_codex_tasks(document, args.path, args.export_tasks))
+        return 0
+    CardPromptEditor(args.path).mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
