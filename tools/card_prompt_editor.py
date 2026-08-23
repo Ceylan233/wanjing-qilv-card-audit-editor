@@ -38,7 +38,7 @@ MAP_ACTION_TEXT_COLORS = {
     "help": "#2e7d32", "take": "#8a6500", "overpower": "#c62828",
 }
 MAP_ACTION_EFFECTS = ["", "受到1点伤害", "受到1点缺氧伤害", "受到1点高温伤害", "失去1点时间", "失去1点士气", "获得1点强化", "获得1点随机技能", "退出", "继续"]
-MAP_ACTION_ELEMENTS = ["", "智慧生物", "动物", "元素体", "植物", "构筑物", "宝箱", "飞船残骸", "符文投射器"]
+MAP_ACTION_ELEMENTS = ["", "电路", "能量", "火", "黄金", "叶", "金属", "沙", "肌腱", "石", "水", "风", "木"]
 
 def find_project() -> Path:
     """Find a local project beside the EXE or current working directory."""
@@ -323,13 +323,8 @@ class CardPromptEditor(tk.Tk):
         stored = review.get("地图行动配置", {}).get("地图背景互动", {})
         if isinstance(stored, dict) and stored:
             return {code for code, enabled in stored.items() if enabled}
-        codes = set()
-        for section in ("地点行动", "图画内地点行动"):
-            for action in card.get("地图", {}).get(section, []):
-                code = str((action.get("故事书") or {}).get("原值") or "")
-                if code in {item[0] for item in MAP_ACTION_ROWS}:
-                    codes.add(code)
-        return codes
+        # 故事书行动类型不是地图背景互动；没有人工配置时保持未选，避免两套字段互相污染。
+        return set()
 
     def load_map_config(self, card: dict) -> None:
         config = card.get("人工校对", {}).get("地图行动配置", {})
