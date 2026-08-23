@@ -62,6 +62,16 @@ PROJECT = find_project()
 DEFAULT_JSON = PROJECT / "data/rules/zh_cn/manual_card_audit.json"
 DIR_KEYS = [("上_北", "北/上"), ("右_东", "东/右"), ("下_南", "南/下"), ("左_西", "西/左")]
 SKILLS = ["未识别", "移动（蓝色）", "查看（紫色）", "接触（橙色）", "帮助（绿色）", "获取（黄色）", "压制（红色）"]
+MAP_ACTION_ROWS = [
+    ("move", "蓝色", "移动"),
+    ("look", "紫色", "查看"),
+    ("engage", "橙色", "接触"),
+    ("help", "绿色", "帮助"),
+    ("take", "黄色", "获取"),
+    ("overpower", "红色", "压制"),
+]
+MAP_ACTION_EFFECTS = ["", "受到1点伤害", "受到1点缺氧伤害", "受到1点高温伤害", "失去1点时间", "失去1点士气", "获得1点强化", "获得1点随机技能", "退出", "继续"]
+MAP_ACTION_ELEMENTS = ["", "智慧生物", "动物", "元素体", "植物", "构筑物", "宝箱", "飞船残骸", "符文投射器"]
 SLOT_TYPES = ["技能类型骰槽", "能力要求骰槽", "指定结果骰槽", "互动元素通配骰槽", "地形限定骰槽", "特定行动额外投骰", "未分类骰槽"]
 RESULTS = ["任意结果/未指定", "生命", "士气", "时间", "空白", "挫折/返回", "星星"]
 COLORS = ["无/未识别", "蓝色", "紫色", "橙色", "绿色", "黄色", "红色"]
@@ -469,11 +479,14 @@ class VisualAuditEditor(tk.Tk):
         self.document_ready = False
         self.test_mode = test_mode
         self.user_modified_current = False
+        self.map_action_config_dirty = False
         self.pending_revision_numbers: set[str] = set()
         self.status_var = tk.StringVar(value="正在加载…")
         self.search_var = tk.StringVar()
         self.type_filter = tk.StringVar(value="全部")
         self.review_filter = tk.StringVar(value="全部")
+        self.map_interaction_filter = tk.StringVar(value="全部")
+        self.visible_card_numbers: list[str] = []
         self.overlay_var = tk.BooleanVar(value=True)
         self.slot_edit_var = tk.BooleanVar(value=False)
         # 简洁模式只改变可见内容，不删除或改写任何底层字段。
@@ -808,7 +821,7 @@ class VisualAuditEditor(tk.Tk):
         frame = ttk.Frame(self, padding=(6, 0, 3, 6))
         self.card_list_frame = frame
         frame.grid(row=1, column=0, sticky="nsew")
-        frame.rowconfigure(4, weight=1)
+        frame.rowconfigure(5, weight=1)
         frame.columnconfigure(0, weight=1)
         ttk.Label(frame, text="卡牌列表", font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         search = ttk.Entry(frame, textvariable=self.search_var, width=24)
@@ -825,8 +838,16 @@ class VisualAuditEditor(tk.Tk):
         )
         review_box.grid(row=3, column=0, sticky="ew", pady=3)
         review_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
+        map_box = ttk.Combobox(
+            frame,
+            textvariable=self.map_interaction_filter,
+            values=["全部", "有地图互动", "无地图互动"],
+            state="readonly",
+        )
+        map_box.grid(row=4, column=0, sticky="ew", pady=3)
+        map_box.bind("<<ComboboxSelected>>", lambda _e: self.filter_cards())
         list_wrap = ttk.Frame(frame)
-        list_wrap.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
+        list_wrap.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
         list_wrap.rowconfigure(0, weight=1)
         self.card_list = tk.Listbox(list_wrap, width=20, exportselection=False, font=("Microsoft YaHei UI", 10))
         self.card_list.grid(row=0, column=0, sticky="nsew")
@@ -835,7 +856,7 @@ class VisualAuditEditor(tk.Tk):
         self.card_list.configure(yscrollcommand=sb.set)
         self.card_list.bind("<<ListboxSelect>>", self.on_card_select)
         self.queue_count_var = tk.StringVar(value="正在统计核验队列…")
-        ttk.Label(frame, textvariable=self.queue_count_var, foreground="#38556b", wraplength=215, justify="left").grid(row=5, column=0, sticky="ew", pady=(5, 0))
+        ttk.Label(frame, textvariable=self.queue_count_var, foreground="#38556b", wraplength=215, justify="left").grid(row=6, column=0, sticky="ew", pady=(5, 0))
 
     def _build_image_panel(self) -> None:
         frame = ttk.Frame(self, padding=(3, 0, 3, 6))
@@ -874,6 +895,7 @@ class VisualAuditEditor(tk.Tk):
         self._build_basic_tab()
         self._build_map_tab()
         self._build_actions_tab()
+        self._build_map_actions_tab()
         self._build_slots_tab()
         self._build_small_tab()
         self._build_review_tab()
@@ -910,7 +932,7 @@ class VisualAuditEditor(tk.Tk):
         if card:
             is_location = bool(card.get("地图", {}).get("是否地点牌", False))
             if is_location:
-                visible.update({"地图与罗盘", "事件与行动"})
+                visible.update({"地图与罗盘", "事件与行动", "地图行动配置"})
             else:
                 # 小卡即使当前识别为0个骰槽，也必须能进入该页补回漏槽。
                 visible.update({"挑战骰槽", "小卡/强化/技能"})
@@ -918,7 +940,11 @@ class VisualAuditEditor(tk.Tk):
                 if any(map_data.get(key) for key in ("地点行动", "图画内地点行动")):
                     visible.add("事件与行动")
         for title, page in self.tab_pages.items():
-            state = "normal" if (not simple or title in visible) else "hidden"
+            # 六色地图行动只适用于地点卡；即使关闭简洁模式，小卡也不显示该页。
+            if title == "地图行动配置" and card and not is_location:
+                state = "hidden"
+            else:
+                state = "normal" if (not simple or title in visible) else "hidden"
             try:
                 self.tabs.tab(page, state=state)
             except tk.TclError:
@@ -1102,6 +1128,61 @@ class VisualAuditEditor(tk.Tk):
         self.action_structure.configure(state="disabled")
         ttk.Button(tab, text="应用所选事件/行动修改", command=self.apply_action).grid(row=4, column=0, sticky="e", pady=5)
         self._prepend_status_bar(tab)
+
+    def _build_map_actions_tab(self) -> None:
+        """大卡专用的卡面地图互动与六色地图行动录入页。"""
+        tab = self._scroll_tab("地图行动配置")
+        ttk.Label(
+            tab,
+            text="地图背景互动仅用于筛选，不会被写成地图行动。地图行动按六种颜色独立录入；保存或切换卡牌时会自动生成给 Codex 的纠正提示词。",
+            foreground="#174f2a",
+            wraplength=820,
+            justify="left",
+        ).grid(row=0, column=0, columnspan=6, sticky="ew", padx=6, pady=(2, 8))
+
+        background = ttk.LabelFrame(tab, text="地图背景互动（不属于地图行动）", padding=6)
+        background.grid(row=1, column=0, columnspan=6, sticky="ew", padx=6, pady=4)
+        self.map_background_vars: dict[str, tk.BooleanVar] = {}
+        for column, (code, color, label) in enumerate(MAP_ACTION_ROWS):
+            variable = tk.BooleanVar(value=False)
+            self.map_background_vars[code] = variable
+            variable.trace_add("write", self.note_map_action_config_edit)
+            ttk.Checkbutton(background, text=f"{color}{label}", variable=variable).grid(row=0, column=column, sticky="w", padx=5)
+
+        ttk.Label(tab, text="地图行动（六种颜色独立选择）", font=("Microsoft YaHei UI", 10, "bold")).grid(row=2, column=0, columnspan=6, sticky="w", padx=6, pady=(10, 3))
+        headers = ["颜色", "作为地图行动", "始终可用", "对话", "强制效果", "元素"]
+        for column, label in enumerate(headers):
+            ttk.Label(tab, text=label).grid(row=3, column=column, sticky="w", padx=4, pady=2)
+        tab.columnconfigure(3, weight=1)
+        tab.columnconfigure(4, weight=1)
+        tab.columnconfigure(5, weight=1)
+        self.map_action_vars: dict[str, dict[str, tk.Variable]] = {}
+        for row, (code, color, label) in enumerate(MAP_ACTION_ROWS, start=4):
+            values: dict[str, tk.Variable] = {
+                "enabled": tk.BooleanVar(value=False),
+                "always": tk.BooleanVar(value=False),
+                "dialogue": tk.StringVar(),
+                "effect": tk.StringVar(),
+                "element": tk.StringVar(),
+            }
+            self.map_action_vars[code] = values
+            for variable in values.values():
+                variable.trace_add("write", self.note_map_action_config_edit)
+            ttk.Label(tab, text=f"{color} {label}").grid(row=row, column=0, sticky="w", padx=4, pady=3)
+            ttk.Checkbutton(tab, variable=values["enabled"]).grid(row=row, column=1, sticky="w", padx=4, pady=3)
+            ttk.Checkbutton(tab, variable=values["always"]).grid(row=row, column=2, sticky="w", padx=4, pady=3)
+            ttk.Entry(tab, textvariable=values["dialogue"]).grid(row=row, column=3, sticky="ew", padx=4, pady=3)
+            ttk.Combobox(tab, textvariable=values["effect"], values=MAP_ACTION_EFFECTS, state="normal").grid(row=row, column=4, sticky="ew", padx=4, pady=3)
+            ttk.Combobox(tab, textvariable=values["element"], values=MAP_ACTION_ELEMENTS, state="normal").grid(row=row, column=5, sticky="ew", padx=4, pady=3)
+        buttons = ttk.Frame(tab)
+        buttons.grid(row=10, column=0, columnspan=6, sticky="e", padx=6, pady=8)
+        ttk.Button(buttons, text="根据选择生成提示词", command=self.generate_map_action_prompt).pack(side="left", padx=4)
+        ttk.Button(buttons, text="应用地图行动配置", command=self.commit_current).pack(side="left", padx=4)
+
+    def note_map_action_config_edit(self, *_args: Any) -> None:
+        if not self.loading and self.current_number:
+            self.map_action_config_dirty = True
+            self.user_modified_current = True
 
     def _build_slots_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=7)
@@ -1537,14 +1618,113 @@ class VisualAuditEditor(tk.Tk):
         return [str(widget.get(index)) for index in widget.curselection()]
 
     def populate_list(self, numbers: list[str] | None = None) -> None:
+        self.visible_card_numbers = list(numbers if numbers is not None else [str(card.get("编号")) for card in self.cards])
         self.card_list.delete(0, tk.END)
-        source_numbers = numbers if numbers is not None else [str(card.get("编号")) for card in self.cards]
-        for number in source_numbers:
+        for number in self.visible_card_numbers:
             card = self.by_number[number]
             self.card_list.insert(tk.END, self.card_list_text(card))
         unresolved_cards = sum(self.has_unresolved_slot(card) for card in self.cards)
         unverified_cards = sum(card.get("人工校对", {}).get("总状态", "未校对") != "已核验" for card in self.cards)
-        self.queue_count_var.set(f"当前显示 {len(source_numbers)} / {len(self.cards)}\n待人工核验 {unverified_cards}｜骰槽待查 {unresolved_cards}")
+        self.queue_count_var.set(f"当前显示 {len(self.visible_card_numbers)} / {len(self.cards)}\n待人工核验 {unverified_cards}｜骰槽待查 {unresolved_cards}")
+        if self.current_number in self.visible_card_numbers:
+            index = self.visible_card_numbers.index(self.current_number)
+            self.card_list.selection_set(index)
+            self.card_list.see(index)
+
+    def map_interaction_codes(self, card: dict[str, Any]) -> set[str]:
+        """读取大卡背景互动；旧数据首次打开时从已有故事书互动反推。"""
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return set()
+        review = card.get("人工校对", {})
+        stored = review.get("地图行动配置", {}).get("地图背景互动", {})
+        if isinstance(stored, dict) and stored:
+            return {code for code, enabled in stored.items() if enabled}
+        codes: set[str] = set()
+        for section in ("地点行动", "图画内地点行动"):
+            for action in card.get("地图", {}).get(section, []):
+                book = str((action.get("故事书") or {}).get("原值") or "")
+                if book in {code for code, _color, _label in MAP_ACTION_ROWS}:
+                    codes.add(book)
+        return codes
+
+    def has_map_interaction(self, card: dict[str, Any]) -> bool:
+        return bool(self.map_interaction_codes(card))
+
+    def load_map_action_config(self, card: dict[str, Any]) -> None:
+        """将大卡专用配置载入表单；地点卡绝不读取或创建骰槽。"""
+        review = card.get("人工校对", {})
+        config = review.get("地图行动配置", {})
+        background = self.map_interaction_codes(card)
+        actions = config.get("地图行动", {}) if isinstance(config, dict) else {}
+        for code, _color, _label in MAP_ACTION_ROWS:
+            self.map_background_vars[code].set(code in background)
+            item = actions.get(code, {}) if isinstance(actions, dict) else {}
+            values = self.map_action_vars[code]
+            values["enabled"].set(bool(item.get("启用", False)))
+            values["always"].set(bool(item.get("始终可用", False)))
+            values["dialogue"].set(str(item.get("对话") or ""))
+            values["effect"].set(str(item.get("强制效果") or ""))
+            values["element"].set(str(item.get("元素") or ""))
+
+    def collect_map_action_config(self) -> dict[str, Any]:
+        background = {code: bool(variable.get()) for code, variable in self.map_background_vars.items()}
+        actions: dict[str, dict[str, Any]] = {}
+        for code, _color, _label in MAP_ACTION_ROWS:
+            values = self.map_action_vars[code]
+            actions[code] = {
+                "启用": bool(values["enabled"].get()),
+                "始终可用": bool(values["always"].get()),
+                "对话": str(values["dialogue"].get()).strip(),
+                "强制效果": str(values["effect"].get()).strip(),
+                "元素": str(values["element"].get()).strip(),
+            }
+        return {"版本": 1, "地图背景互动": background, "地图行动": actions}
+
+    def build_map_action_prompt(self, card: dict[str, Any], config: dict[str, Any]) -> str:
+        background = config.get("地图背景互动", {})
+        actions = config.get("地图行动", {})
+        background_labels = [f"{color}{label}" for code, color, label in MAP_ACTION_ROWS if background.get(code)]
+        lines = [f"卡牌 {str(card.get('编号') or '').zfill(4)} 是地点卡，不含挑战骰槽。"]
+        if background_labels:
+            lines.append("地图背景互动（仅用于筛选，不属于地图行动）：" + "、".join(background_labels) + "。")
+        else:
+            lines.append("地图背景互动：无。")
+        enabled_lines = []
+        for code, color, label in MAP_ACTION_ROWS:
+            item = actions.get(code, {})
+            if not item.get("启用"):
+                continue
+            details = ["始终可用" if item.get("始终可用") else "非始终可用"]
+            if item.get("对话"):
+                details.append(f"对话：{item['对话']}")
+            if item.get("强制效果"):
+                details.append(f"强制效果：{item['强制效果']}")
+            if item.get("元素"):
+                details.append(f"元素：{item['元素']}")
+            enabled_lines.append(f"{color}{label}地图行动：" + "；".join(details) + "。")
+        lines.append("地图行动：" + ("\n".join(enabled_lines) if enabled_lines else "无。"))
+        lines.append("请以此配置为准，只修改地点卡的地图行动与对应运行逻辑；不要创建或修改挑战骰槽。")
+        return "\n".join(lines)
+
+    def apply_map_action_config(self, card: dict[str, Any]) -> None:
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return
+        config = self.collect_map_action_config()
+        review = card.setdefault("人工校对", {})
+        review["地图行动配置"] = config
+        text_set(self.review_ai_prompt, self.build_map_action_prompt(card, config))
+
+    def generate_map_action_prompt(self) -> None:
+        if not self.current_number:
+            return
+        card = self.by_number[self.current_number]
+        if not card.get("地图", {}).get("是否地点牌", False):
+            return
+        config = self.collect_map_action_config()
+        text_set(self.review_ai_prompt, self.build_map_action_prompt(card, config))
+        self.map_action_config_dirty = True
+        self.user_modified_current = True
+        self.status_var.set("已按地图互动与六色地图行动生成提示词；保存或切换卡牌时写入")
 
     def has_unresolved_slot(self, card: dict[str, Any]) -> bool:
         return any(bool(slot.get("未解决问题")) for slot in card.get("挑战骰", {}).get("槽位", []))
@@ -1629,6 +1809,7 @@ class VisualAuditEditor(tk.Tk):
         query = self.search_var.get().strip().lower()
         wanted_type = self.type_filter.get()
         wanted_review = self.review_filter.get()
+        wanted_map_interaction = self.map_interaction_filter.get()
         result = []
         for card in self.cards:
             number = str(card.get("编号"))
@@ -1645,6 +1826,10 @@ class VisualAuditEditor(tk.Tk):
             if query and query not in (number + name + desc + summary + ai_prompt).lower():
                 continue
             if wanted_type != "全部" and display_kind != wanted_type:
+                continue
+            if wanted_map_interaction == "有地图互动" and not self.has_map_interaction(card):
+                continue
+            if wanted_map_interaction == "无地图互动" and self.has_map_interaction(card):
                 continue
             display_state = self.revision_display_state(card)
             if wanted_review == "待人工核验" and review == "已核验":
@@ -1676,7 +1861,10 @@ class VisualAuditEditor(tk.Tk):
         selected = self.card_list.curselection()
         if not selected:
             return
-        number = self.card_list.get(selected[0]).split()[0]
+        index = int(selected[0])
+        if index >= len(self.visible_card_numbers):
+            return
+        number = self.visible_card_numbers[index]
         if self.current_number and self.current_number != number:
             self.commit_current()
         self.current_number = number
@@ -1722,6 +1910,7 @@ class VisualAuditEditor(tk.Tk):
             vars_["printed"].set("" if road.get("罗盘印刷值") is None else str(road.get("罗盘印刷值")))
             vars_["destination"].set("" if road.get("目标地点编号") is None else str(road.get("目标地点编号")))
             vars_["cost"].set("" if road.get("移动花费") is None else str(road.get("移动花费")))
+        self.load_map_action_config(card)
         self.current_action_ref = None
         self.current_slot_index = None
         self.current_boost_index = None
@@ -1778,6 +1967,7 @@ class VisualAuditEditor(tk.Tk):
         self.apply_display_mode()
         self.loading = False
         self.user_modified_current = False
+        self.map_action_config_dirty = False
         self.status_var.set(f"{number}｜骰槽 {card.get('挑战骰', {}).get('槽位总数', 0)}｜{self.review_status.get()}")
 
     def human_checklist_text(self, card: dict[str, Any]) -> str:
@@ -2533,6 +2723,8 @@ class VisualAuditEditor(tk.Tk):
             destination = vars_["destination"].get().strip()
             road["目标地点编号"] = destination.zfill(4) if destination.isdigit() else destination or None
             road["移动花费"] = parse_cost(vars_["cost"].get())
+        if self.map_action_config_dirty:
+            self.apply_map_action_config(card)
         small = card.setdefault("小卡", {})
         small_type_zh = self.small_type.get().strip() or "未分类/不适用"
         small.setdefault("小卡类型", {}).update({"中文": small_type_zh, "原值": SMALL_TYPE_CODES.get(small_type_zh, "")})
@@ -2596,6 +2788,7 @@ class VisualAuditEditor(tk.Tk):
             self.dirty = True
             self.status_var.set(f"{self.current_number} 已修改，尚未写入磁盘")
         self.user_modified_current = False
+        self.map_action_config_dirty = False
         self.refresh_advanced()
 
     def regenerate_current_summary(self) -> None:
@@ -3331,6 +3524,27 @@ def ui_self_test(path: Path) -> int:
     if not 0.95 <= editor.display_scale <= 1.05:
         editor.destroy()
         return 7
+    # 列表显示文字会随状态变化，必须按稳定的编号索引同步右侧内容。
+    if len(editor.visible_card_numbers) < 2:
+        editor.destroy()
+        return 9
+    editor.card_list.selection_clear(0, tk.END)
+    editor.card_list.selection_set(1)
+    editor.on_card_select()
+    if editor.current_number != editor.visible_card_numbers[1]:
+        editor.destroy()
+        return 10
+    small_number = next((number for number, card in editor.by_number.items() if not card.get("地图", {}).get("是否地点牌", False)), "")
+    if not small_number:
+        editor.destroy()
+        return 11
+    small_index = editor.visible_card_numbers.index(small_number)
+    editor.card_list.selection_clear(0, tk.END)
+    editor.card_list.selection_set(small_index)
+    editor.on_card_select()
+    if editor.tabs.tab(editor.tab_pages["地图行动配置"], "state") != "hidden":
+        editor.destroy()
+        return 12
     editor.destroy()
     return 0
 
