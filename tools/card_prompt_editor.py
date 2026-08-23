@@ -265,14 +265,13 @@ class CardPromptEditor(tk.Tk):
         card_effect = ttk.LabelFrame(tab, text="卡牌内容（不属于任何地图行动）", padding=4)
         card_effect.grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
         card_effect.columnconfigure(1, weight=1)
-        self.card_dialogue = tk.StringVar()
+        self.card_dialogue = tk.BooleanVar(value=False)
         self.card_forced_effect = tk.StringVar()
         self.card_element = tk.StringVar()
         self.card_dialogue.trace_add("write", self.note_map_config_edit)
         self.card_forced_effect.trace_add("write", self.note_map_config_edit)
         self.card_element.trace_add("write", self.note_map_config_edit)
-        ttk.Label(card_effect, text="对话").grid(row=0, column=0, sticky="w", padx=3)
-        ttk.Entry(card_effect, textvariable=self.card_dialogue).grid(row=0, column=1, sticky="ew", padx=3)
+        ttk.Checkbutton(card_effect, text="有对话", variable=self.card_dialogue).grid(row=0, column=0, columnspan=2, sticky="w", padx=3)
         ttk.Label(card_effect, text="强制效果").grid(row=1, column=0, sticky="w", padx=3)
         ttk.Combobox(card_effect, textvariable=self.card_forced_effect, values=MAP_ACTION_EFFECTS, state="normal").grid(row=1, column=1, sticky="ew", padx=3)
         ttk.Label(card_effect, text="元素").grid(row=2, column=0, sticky="w", padx=3)
@@ -321,7 +320,7 @@ class CardPromptEditor(tk.Tk):
         content = config.get("卡牌内容", {}) if isinstance(config, dict) else {}
         # 兼容刚才尚未保存的早期结构：将行内字段提升为卡牌字段。
         legacy = next((item for item in actions.values() if isinstance(item, dict) and any(item.get(key) for key in ("对话", "强制效果", "元素"))), {})
-        self.card_dialogue.set(str(content.get("对话") or legacy.get("对话") or ""))
+        self.card_dialogue.set(bool(content.get("有对话", content.get("对话") or legacy.get("对话"))))
         self.card_forced_effect.set(str(content.get("强制效果") or legacy.get("强制效果") or ""))
         self.card_element.set(str(content.get("元素") or legacy.get("元素") or ""))
         background = self.map_interaction_codes(card)
@@ -351,7 +350,7 @@ class CardPromptEditor(tk.Tk):
             "版本": 1,
             "地图背景互动": {code: bool(variable.get()) for code, variable in self.map_background_vars.items()},
             "卡牌内容": {
-                "对话": self.card_dialogue.get().strip(),
+                "有对话": bool(self.card_dialogue.get()),
                 "强制效果": self.card_forced_effect.get().strip(),
                 "元素": self.card_element.get().strip(),
             },
@@ -366,8 +365,8 @@ class CardPromptEditor(tk.Tk):
         lines = [f"卡牌 {card_number(card)} 是地点卡，不含挑战骰槽。"]
         lines.append("地图背景互动（仅用于筛选，不属于地图行动）：" + ("、".join(interaction_labels) if interaction_labels else "无") + "。")
         card_details = []
-        if content["对话"]:
-            card_details.append(f"对话：{content['对话']}")
+        if content["有对话"]:
+            card_details.append("包含对话")
         if content["强制效果"]:
             card_details.append(f"强制效果：{content['强制效果']}")
         if content["元素"]:
