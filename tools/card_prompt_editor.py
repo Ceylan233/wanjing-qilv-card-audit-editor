@@ -14,12 +14,27 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 
 EDITOR_VERSION = "0.1.0"
-PROJECT = Path(__file__).resolve().parents[1]
+def find_project() -> Path:
+    """Find a local project beside the EXE or current working directory."""
+    starts = [Path.cwd()]
+    if getattr(sys, "frozen", False):
+        starts.insert(0, Path(sys.executable).resolve().parent)
+    else:
+        starts.insert(0, Path(__file__).resolve().parents[1])
+    for start in starts:
+        for candidate in (start, *start.parents):
+            if (candidate / "data" / "rules" / "zh_cn" / "manual_card_audit.json").is_file():
+                return candidate
+    return starts[0]
+
+
+PROJECT = find_project()
 DEFAULT_JSON = PROJECT / "data" / "rules" / "zh_cn" / "manual_card_audit.json"
 
 
@@ -299,12 +314,33 @@ def main() -> int:
     parser.add_argument("--export-tasks", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        return self_test(args.path)
+        try:
+            return self_test(args.path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f"自检失败：{exc}")
+            return 2
     if args.export_tasks:
         document = load_document(args.path)
         print(export_codex_tasks(document, args.path, args.export_tasks))
         return 0
-    CardPromptEditor(args.path).mainloop()
+    path = args.path
+    if not path.is_file():
+        picker = tk.Tk()
+        picker.withdraw()
+        selected = filedialog.askopenfilename(
+            title="选择卡牌校对 JSON",
+            initialdir=str(PROJECT),
+            filetypes=[("卡牌校对 JSON", "*.json"), ("所有文件", "*.*")],
+        )
+        picker.destroy()
+        if not selected:
+            return 1
+        path = Path(selected)
+    try:
+        CardPromptEditor(path).mainloop()
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        messagebox.showerror("无法打开卡牌文件", str(exc))
+        return 2
     return 0
 
 
