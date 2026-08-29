@@ -231,6 +231,8 @@ class CardPromptEditor(tk.Tk):
         ttk.Button(buttons, text="下一张", command=lambda: self.move_selection(1)).pack(side="left", padx=3)
         ttk.Button(buttons, text="保存当前提示词", command=self.save_current).pack(side="left", padx=3)
         self.bind("<Control-s>", lambda _event: self.save())
+        self.bind("<KeyPress-q>", self.on_detect_map_actions_shortcut)
+        self.bind("<KeyPress-w>", self.on_toggle_dialogue_shortcut)
 
     def _build_prompt_tab(self) -> None:
         tab = ttk.Frame(self.editor_tabs, padding=6)
@@ -277,7 +279,7 @@ class CardPromptEditor(tk.Tk):
         self.card_forced_effect.trace_add("write", self.note_map_config_edit)
         self.card_element.trace_add("write", self.note_map_config_edit)
         self.card_always_available.trace_add("write", self.note_map_config_edit)
-        ttk.Checkbutton(card_effect, text="有对话", variable=self.card_dialogue).grid(row=0, column=0, columnspan=2, sticky="w", padx=3)
+        ttk.Checkbutton(card_effect, text="有对话（W）", variable=self.card_dialogue).grid(row=0, column=0, columnspan=2, sticky="w", padx=3)
         ttk.Label(card_effect, text="强制效果").grid(row=1, column=0, sticky="w", padx=3)
         ttk.Combobox(card_effect, textvariable=self.card_forced_effect, values=MAP_ACTION_EFFECTS, state="normal").grid(row=1, column=1, sticky="ew", padx=3)
         ttk.Label(card_effect, text="元素").grid(row=2, column=0, sticky="w", padx=3)
@@ -301,8 +303,37 @@ class CardPromptEditor(tk.Tk):
         self.map_action_note.bind("<KeyRelease>", lambda _event: self.note_map_config_edit())
         action_buttons = ttk.Frame(tab)
         action_buttons.grid(row=7, column=0, columnspan=2, sticky="e", pady=8)
-        ttk.Button(action_buttons, text="按已有行动记录识别六色", command=self.detect_map_actions).pack(side="left", padx=4)
+        ttk.Button(action_buttons, text="按已有行动记录识别六色（Q）", command=self.detect_map_actions).pack(side="left", padx=4)
         ttk.Button(action_buttons, text="根据选择生成提示词", command=self.generate_map_prompt).pack(side="left", padx=4)
+
+    def shortcut_is_disabled(self, event: tk.Event) -> bool:
+        """文本输入控件获得焦点时，不拦截普通字母按键。"""
+        widget = event.widget
+        try:
+            widget_class = str(widget.winfo_class())
+        except (AttributeError, tk.TclError):
+            return True
+        return widget_class in {"Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox"}
+
+    def current_card_is_location(self) -> bool:
+        return bool(
+            self.current_number
+            and self.by_number[self.current_number].get("地图", {}).get("是否地点牌", False)
+        )
+
+    def on_detect_map_actions_shortcut(self, event: tk.Event):
+        if self.shortcut_is_disabled(event) or not self.current_card_is_location():
+            return None
+        self.detect_map_actions()
+        return "break"
+
+    def on_toggle_dialogue_shortcut(self, event: tk.Event):
+        if self.shortcut_is_disabled(event) or not self.current_card_is_location():
+            return None
+        self.card_dialogue.set(not self.card_dialogue.get())
+        state = "有对话" if self.card_dialogue.get() else "无对话"
+        self.status_var.set(f"已用 W 快捷键设为：{state}")
+        return "break"
 
     def note_map_config_edit(self, *_args) -> None:
         if self.current_number:
@@ -675,6 +706,28 @@ def ui_self_test(path: Path) -> int:
     if editor.image_source is None or editor.current_number != "0002":
         editor.destroy()
         return 5
+    shortcut_event = tk.Event()
+    shortcut_event.widget = editor.card_list
+    expected_actions = editor.action_codes_from_card(editor.by_number[editor.current_number])
+    for values in editor.map_action_vars.values():
+        values["enabled"].set(False)
+    if editor.on_detect_map_actions_shortcut(shortcut_event) != "break":
+        editor.destroy()
+        return 11
+    selected_actions = {code for code, values in editor.map_action_vars.items() if values["enabled"].get()}
+    if selected_actions != expected_actions:
+        editor.destroy()
+        return 12
+    dialogue_before = editor.card_dialogue.get()
+    if editor.on_toggle_dialogue_shortcut(shortcut_event) != "break" or editor.card_dialogue.get() == dialogue_before:
+        editor.destroy()
+        return 13
+    text_event = tk.Event()
+    text_event.widget = editor.prompt_text
+    dialogue_before = editor.card_dialogue.get()
+    if editor.on_toggle_dialogue_shortcut(text_event) is not None or editor.card_dialogue.get() != dialogue_before:
+        editor.destroy()
+        return 14
     editor.map_action_vars["move"]["enabled"].set(True)
     editor.card_always_available.set("蓝色移动")
     editor.card_forced_effect.set("受到1点缺氧伤害")
