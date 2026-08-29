@@ -12,6 +12,7 @@
 /tools/*
 !/tools/manual_card_audit_visual_editor.py
 !/tools/card_summary.py
+!/tools/card_image_orientation.py
 !/tools/card_prompt_editor.py
 !/tools/build_card_prompt_editor_appimage.sh
 !/tools/editor_build_version.py

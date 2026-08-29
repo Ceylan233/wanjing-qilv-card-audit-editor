@@ -20,6 +20,8 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from card_image_orientation import card_display_rotation
+
 try:
     from editor_build_version import EDITOR_VERSION
 except ImportError:
@@ -610,7 +612,7 @@ class CardPromptEditor(tk.Tk):
         if path:
             try:
                 image = Image.open(path).convert("RGB")
-                rotation = int((card.get("人工校对") or {}).get("图片显示旋转度数", 0) or 0) % 360
+                rotation = card_display_rotation(card)
                 self.image_source = image.rotate(-rotation, expand=True) if rotation else image
             except OSError:
                 self.image_source = None
@@ -770,6 +772,11 @@ def self_test(path: Path) -> int:
     package = build_codex_task_package(document, path)
     if package["待处理数量"] != sum(bool(prompt_value(card)) for card in cards):
         return 4
+    by_number = {card_number(card): card for card in cards}
+    if any(card_display_rotation(by_number[str(number)]) != 180 for number in range(1092, 1105)):
+        return 5
+    if card_display_rotation(by_number["1091"]) != 0 or card_display_rotation(by_number["1105"]) != 0:
+        return 6
     return 0
 
 

@@ -31,6 +31,8 @@ except ImportError:  # 源码环境未安装时仍尝试使用系统证书
 
 from PIL import Image, ImageDraw, ImageTk
 
+from card_image_orientation import card_display_rotation
+
 try:
     from editor_build_version import EDITOR_VERSION as EMBEDDED_EDITOR_VERSION
 except ImportError:
@@ -100,14 +102,6 @@ STORY_BOOK_CODES = {
 }
 CHALLENGE_SLOT_WIDTH = 334.0
 CHALLENGE_SLOT_HEIGHT = 327.0
-DEFAULT_IMAGE_ROTATIONS = {
-    **{str(number).zfill(4): 180 for number in range(1092, 1105)},
-    **{str(number).zfill(4): 90 for number in range(1265, 1294)},
-    "1138": 180,
-    "1139": 180,
-    "1146": 180,
-    "1150": 90,
-}
 EDITOR_VERSION = re.sub(
     r"^(?:editor-)?v",
     "",
@@ -1772,8 +1766,7 @@ class VisualAuditEditor(tk.Tk):
         self.checklist_text.configure(state="disabled")
         self.refresh_advanced()
         self.image_zoom = 1.0
-        default_rotation = DEFAULT_IMAGE_ROTATIONS.get(str(card.get("编号") or "").zfill(4), 0)
-        self.image_rotation = int(card.get("人工校对", {}).get("图片显示旋转度数", default_rotation) or 0) % 360
+        self.image_rotation = card_display_rotation(card)
         self.refresh_image()
         self.apply_display_mode()
         self.loading = False
